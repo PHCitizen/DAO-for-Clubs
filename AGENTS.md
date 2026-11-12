@@ -10,6 +10,14 @@
 
 Use pnpm and a pnpm workspace. Separate the frontend package from the contracts/tooling package, which owns Solidity, Hardhat, contract tests, and deployment/maintenance scripts. Keep development credentials and deployment-only code out of the frontend.
 
+### Frontend testing
+
+Test frontend behavior through public application functions (the action/read interface), rather than UI rendering, components, hooks, or DOM assertions. Keep presentation separate from the behavior under test.
+
+### Contracts tooling and scripts
+
+Write contracts-package configuration, tests, deployment/maintenance tooling, and other repository scripts in TypeScript. Run standalone scripts with `tsx`; on-chain contracts remain Solidity. Keep scripts straightforward, organized into small named functions with a clear `main` flow. Script-specific automated tests are not required; verify scripts through TypeScript checks and a direct run when safe. Keep behavioral tests for application and contract behavior.
+
 ## Agent skills
 
 ### Issue tracker

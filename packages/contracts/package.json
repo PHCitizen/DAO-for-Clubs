@@ -1,0 +1,19 @@
+{
+  "name": "@dao/contracts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "hardhat node --hostname 127.0.0.1",
+    "build": "hardhat build",
+    "test": "hardhat test",
+    "typecheck": "tsc --noEmit",
+    "artifacts:export": "tsx scripts/export-public-artifacts.ts"
+  },
+  "devDependencies": {
+    "hardhat": "3.21.2",
+    "@nomicfoundation/hardhat-node-test-runner": "3.1.2",
+    "@types/node": "^24.0.0",
+    "typescript": "5.9.3",
+    "tsx": "4.23.15"
+  }
+}
