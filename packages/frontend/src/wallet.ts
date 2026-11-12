@@ -1,0 +1,147 @@
+/**
+ * WalletAdapter is the external seam between the application and the browser
+ * wallet. The application never touches window.ethereum directly; it uses this
+ * interface. Tests inject controlled stubs; production code uses the EIP-1193
+ * adapter returned by createBrowserWalletAdapter().
+ */
+export type Address = `0x${string}`
+
+export interface AccountChangedEvent {
+  account: Address | null
+}
+
+export type AccountChangedListener = (event: AccountChangedEvent) => void
+
+export interface WalletAdapter {
+  /** Request the user to connect. Resolves with the first selected address. */
+  connect(): Promise<Address>
+  /** Disconnect / clear the session. */
+  disconnect(): Promise<void>
+  /** Return the currently connected address without prompting the user. */
+  getAccount(): Promise<Address | null>
+  /** Subscribe to account changes (switch or disconnect). Returns unsubscribe. */
+  onAccountChanged(listener: AccountChangedListener): () => void
+  /** True when a compatible EIP-1193 provider is available in the browser. */
+  isAvailable(): boolean
+}
+
+// ---------------------------------------------------------------------------
+// Browser EIP-1193 adapter (viem-compatible, production path)
+// ---------------------------------------------------------------------------
+
+/** Narrows the EIP-1193 provider surface we actually use. */
+interface Eip1193Provider {
+  request(args: { method: string; params?: unknown[] }): Promise<unknown>
+  on(event: string, listener: (...args: unknown[]) => void): void
+  removeListener(event: string, listener: (...args: unknown[]) => void): void
+}
+
+function getProvider(): Eip1193Provider | undefined {
+  if (typeof window === 'undefined') return undefined
+  const w = window as unknown as { ethereum?: Eip1193Provider }
+  return w.ethereum
+}
+
+/**
+ * Returns the production wallet adapter that delegates to window.ethereum.
+ * Call this once at application startup.
+ */
+export function createBrowserWalletAdapter(): WalletAdapter {
+  return {
+    isAvailable() {
+      return getProvider() !== undefined
+    },
+
+    async connect(): Promise<Address> {
+      const provider = getProvider()
+      if (!provider) throw new WalletUnavailableError()
+      const accounts = (await provider.request({
+        method: 'eth_requestAccounts',
+      })) as string[]
+      if (!accounts || accounts.length === 0) throw new WalletConnectError('No accounts returned')
+      return accounts[0] as Address
+    },
+
+    async disconnect(): Promise<void> {
+      // EIP-1193 has no standard disconnect; we clear our own session state.
+      // Some wallets expose wallet_revokePermissions — call it if present but
+      // do not fail when absent.
+      const provider = getProvider()
+      if (provider) {
+        try {
+          await provider.request({
+            method: 'wallet_revokePermissions',
+            params: [{ eth_accounts: {} }],
+          })
+        } catch {
+          // Not supported by this wallet — ignore.
+        }
+      }
+    },
+
+    async getAccount(): Promise<Address | null> {
+      const provider = getProvider()
+      if (!provider) return null
+      const accounts = (await provider.request({ method: 'eth_accounts' })) as string[]
+      return accounts && accounts.length > 0 ? (accounts[0] as Address) : null
+    },
+
+    onAccountChanged(listener: AccountChangedListener): () => void {
+      const provider = getProvider()
+      if (!provider) return () => {}
+      const handler = (accounts: unknown) => {
+        const list = accounts as string[]
+        listener({ account: list && list.length > 0 ? (list[0] as Address) : null })
+      }
+      provider.on('accountsChanged', handler)
+      return () => provider.removeListener('accountsChanged', handler)
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Domain errors
+// ---------------------------------------------------------------------------
+
+export class WalletUnavailableError extends Error {
+  readonly kind = 'wallet-unavailable' as const
+  constructor() {
+    super('No wallet extension detected. Install a compatible wallet to connect.')
+    this.name = 'WalletUnavailableError'
+  }
+}
+
+export class WalletConnectError extends Error {
+  readonly kind = 'wallet-connect-error' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'WalletConnectError'
+  }
+}
+
+export class WalletRejectedError extends Error {
+  readonly kind = 'wallet-rejected' as const
+  constructor() {
+    super('Connection request was rejected. You can try again.')
+    this.name = 'WalletRejectedError'
+  }
+}
+
+/** Normalize raw wallet errors to domain errors. */
+export function normalizeWalletError(err: unknown): WalletUnavailableError | WalletRejectedError | WalletConnectError {
+  if (
+    err instanceof WalletUnavailableError ||
+    err instanceof WalletRejectedError ||
+    err instanceof WalletConnectError
+  ) {
+    return err
+  }
+  if (err instanceof Error) {
+    // EIP-1193 user rejected: code 4001
+    if ('code' in err && (err as { code: number }).code === 4001) {
+      return new WalletRejectedError()
+    }
+    return new WalletConnectError(err.message)
+  }
+  return new WalletConnectError(String(err))
+}
