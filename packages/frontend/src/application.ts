@@ -1,5 +1,5 @@
 import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
-import { encodeFunctionData, erc20Abi, isAddress, parseAbi, parseUnits, type Hash } from 'viem'
+import { decodeEventLog, encodeFunctionData, erc20Abi, isAddress, parseUnits, type Hash } from 'viem'
 import {
   type WalletAdapter,
   type Address,
@@ -155,15 +155,13 @@ export type FundingBalances = {
   senderBalance: bigint
   treasuryBalance: bigint
 }
+export type FundingRequest = { treasury: Address; sender: Address; amount: string }
 export type FundingState =
   | { status: 'idle' }
-  | { status: 'submitting'; treasury: Address; sender: Address; amount: string }
-  | { status: 'pending'; treasury: Address; sender: Address; amount: string; hash: Hash }
-  | { status: 'confirmed'; treasury: Address; sender: Address; amount: string; hash: Hash; balances?: FundingBalances; refreshError?: string }
+  | (FundingRequest & { status: 'submitting' })
+  | (FundingRequest & { status: 'pending'; hash: Hash })
+  | (FundingRequest & { status: 'confirmed'; hash: Hash; balances?: FundingBalances; refreshError?: string })
   | { status: 'rejected' | 'failed'; message: string }
-
-const fundingDaoAbi = parseAbi(['function testUsd() view returns (address)', 'function isTreasury(address) view returns (bool)'])
-const fundingTreasuryAbi = parseAbi(['function dao() view returns (address)', 'function fundingAsset() view returns (address)'])
 
 export function createApplication(
   adapter?: WalletAdapter,
@@ -229,23 +227,14 @@ export function createApplication(
   }
 
   async function fundingBalances(treasury: Address, sender: Address): Promise<FundingBalances> {
-    const client = rpc?.contractClient
+    const contracts = rpc?.contracts
     const dao = deploymentContext.daoAddress
     const asset = deploymentContext.testUsdAddress
-    if (!client || !dao || !asset || !deploymentContext.isSupported || !isAddress(treasury)) throw new Error('Funding deployment is unavailable or invalid.')
-    if (await client.getChainId() !== deploymentContext.chainId) throw new Error('RPC deployment chain mismatch.')
-    const [shared, registered, ownerDao, fundingAsset] = await Promise.all([
-      client.readContract({ address: dao, abi: fundingDaoAbi, functionName: 'testUsd' }),
-      client.readContract({ address: dao, abi: fundingDaoAbi, functionName: 'isTreasury', args: [treasury] }),
-      client.readContract({ address: treasury, abi: fundingTreasuryAbi, functionName: 'dao' }),
-      client.readContract({ address: treasury, abi: fundingTreasuryAbi, functionName: 'fundingAsset' }),
-    ])
+    if (!contracts || !dao || !asset || !deploymentContext.isSupported || !isAddress(treasury)) throw new Error('Funding deployment is unavailable or invalid.')
+    if (await rpc!.getChainId() !== deploymentContext.chainId) throw new Error('RPC deployment chain mismatch.')
+    const { shared, registered, ownerDao, fundingAsset } = await contracts.readDeployment(dao, treasury)
     if (!registered || shared.toLowerCase() !== asset.toLowerCase() || fundingAsset.toLowerCase() !== asset.toLowerCase() || ownerDao.toLowerCase() !== dao.toLowerCase()) throw new Error('Treasury does not belong to the configured deployment.')
-    const [decimals, senderBalance, treasuryBalance] = await Promise.all([
-      client.readContract({ address: asset, abi: erc20Abi, functionName: 'decimals' }),
-      client.readContract({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [sender] }),
-      client.readContract({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [treasury] }),
-    ])
+    const { decimals, senderBalance, treasuryBalance } = await contracts.readBalances(asset, sender, treasury)
     return { treasury, sender, asset, decimals, senderBalance, treasuryBalance }
   }
 
@@ -316,7 +305,8 @@ export function createApplication(
       try {
         const prepared = await this.prepareDeploymentAction({ target: 'testUsd' })
         const sender = prepared.context.account
-        emitFunding({ status: 'submitting', treasury, sender, amount })
+        const request: FundingRequest = { treasury, sender, amount }
+        emitFunding({ status: 'submitting', ...request })
         const balances = await fundingBalances(treasury, sender)
         if (!/^\d+(\.\d+)?$/.test(amount) || (amount.split('.')[1]?.length ?? 0) > balances.decimals) throw new Error('Enter a positive amount within TestUSD precision.')
         const units = parseUnits(amount, balances.decimals)
@@ -325,10 +315,18 @@ export function createApplication(
         if (!adapter?.sendTransaction || await adapter.getAccount() !== sender || await adapter.getChainId() !== deploymentContext.chainId) throw new Error('Wallet configuration changed or cannot submit transactions.')
         prepared.assertValid()
         const hash = await adapter.sendTransaction({ account: sender, to: balances.asset, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [treasury, units] }) })
-        emitFunding({ status: 'pending', treasury, sender, amount, hash })
-        const receipt = await rpc!.contractClient!.waitForTransactionReceipt({ hash })
+        emitFunding({ status: 'pending', ...request, hash })
+        const receipt = await rpc!.contracts!.waitForReceipt(hash)
         if (receipt.status !== 'success') throw new Error('Funding transaction reverted.')
-        const confirmed = { status: 'confirmed' as const, treasury, sender, amount, hash }
+        const transferred = receipt.logs.some(log => {
+          if (log.address.toLowerCase() !== balances.asset.toLowerCase()) return false
+          try {
+            const event = decodeEventLog({ abi: erc20Abi, eventName: 'Transfer', data: log.data, topics: log.topics })
+            return event.args.from.toLowerCase() === sender.toLowerCase() && event.args.to.toLowerCase() === treasury.toLowerCase() && event.args.value === units
+          } catch { return false }
+        })
+        if (!transferred) throw new Error('Mined transaction did not transfer the requested TestUSD amount to this treasury.')
+        const confirmed = { status: 'confirmed' as const, ...request, hash: receipt.transactionHash }
         try { emitFunding({ ...confirmed, balances: await fundingBalances(treasury, sender) }) }
         catch (error) { emitFunding({ ...confirmed, refreshError: error instanceof Error ? error.message : String(error) }) }
       } catch (error) {

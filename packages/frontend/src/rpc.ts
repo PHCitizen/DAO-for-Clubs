@@ -1,4 +1,4 @@
-import { createPublicClient, http, type PublicClient } from 'viem'
+import { createPublicClient, erc20Abi, http, parseAbi, type Hash, type PublicClient, type TransactionReceipt } from 'viem'
 import type { Address } from './wallet.js'
 
 // ---------------------------------------------------------------------------
@@ -69,9 +69,51 @@ export class RpcUnavailableError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface RpcAdapter {
-  contractClient?: PublicClient
+  contracts?: FundingContractOperations
   getChainId(): Promise<number>
   getBlockNumber(): Promise<bigint>
+}
+
+export interface FundingContractOperations {
+  readDeployment(dao: Address, treasury: Address): Promise<{ shared: Address; registered: boolean; ownerDao: Address; fundingAsset: Address }>
+  readBalances(asset: Address, sender: Address, treasury: Address): Promise<{ decimals: number; senderBalance: bigint; treasuryBalance: bigint }>
+  waitForReceipt(hash: Hash): Promise<Pick<TransactionReceipt, 'status' | 'transactionHash' | 'logs'>>
+}
+
+const fundingDaoAbi = parseAbi(['function testUsd() view returns (address)', 'function isTreasury(address) view returns (bool)'])
+const fundingTreasuryAbi = parseAbi(['function dao() view returns (address)', 'function fundingAsset() view returns (address)'])
+
+async function withRpcError<T>(operation: () => Promise<T>): Promise<T> {
+  try { return await operation() }
+  catch (error) { throw new RpcUnavailableError(error instanceof Error ? error.message : String(error)) }
+}
+
+/** Wrap the transport client once; callers receive only the operations funding needs. */
+export function createRpcAdapter(client: Pick<PublicClient, 'getChainId' | 'getBlockNumber' | 'readContract' | 'waitForTransactionReceipt'>): RpcAdapter {
+  return {
+    getChainId: () => withRpcError(() => client.getChainId()),
+    getBlockNumber: () => withRpcError(() => client.getBlockNumber()),
+    contracts: {
+      readDeployment: (dao, treasury) => withRpcError(async () => {
+        const [shared, registered, ownerDao, fundingAsset] = await Promise.all([
+          client.readContract({ address: dao, abi: fundingDaoAbi, functionName: 'testUsd' }),
+          client.readContract({ address: dao, abi: fundingDaoAbi, functionName: 'isTreasury', args: [treasury] }),
+          client.readContract({ address: treasury, abi: fundingTreasuryAbi, functionName: 'dao' }),
+          client.readContract({ address: treasury, abi: fundingTreasuryAbi, functionName: 'fundingAsset' }),
+        ])
+        return { shared, registered, ownerDao, fundingAsset }
+      }),
+      readBalances: (asset, sender, treasury) => withRpcError(async () => {
+        const [decimals, senderBalance, treasuryBalance] = await Promise.all([
+          client.readContract({ address: asset, abi: erc20Abi, functionName: 'decimals' }),
+          client.readContract({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [sender] }),
+          client.readContract({ address: asset, abi: erc20Abi, functionName: 'balanceOf', args: [treasury] }),
+        ])
+        return { decimals, senderBalance, treasuryBalance }
+      }),
+      waitForReceipt: hash => withRpcError(() => client.waitForTransactionReceipt({ hash })),
+    },
+  }
 }
 
 /**
@@ -82,22 +124,5 @@ export function createBrowserRpcAdapter(rpcUrl: string): RpcAdapter {
     transport: http(rpcUrl),
   })
 
-  return {
-    contractClient: client,
-    async getChainId(): Promise<number> {
-      try {
-        return await client.getChainId()
-      } catch (err) {
-        throw new RpcUnavailableError(err instanceof Error ? err.message : String(err))
-      }
-    },
-
-    async getBlockNumber(): Promise<bigint> {
-      try {
-        return await client.getBlockNumber()
-      } catch (err) {
-        throw new RpcUnavailableError(err instanceof Error ? err.message : String(err))
-      }
-    },
-  }
+  return createRpcAdapter(client)
 }
