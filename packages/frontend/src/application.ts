@@ -1,3 +1,4 @@
+import { isAddress } from 'viem'
 import publicArtifacts from './generated/public-artifacts.json'
 import {
   type WalletAdapter,
@@ -25,6 +26,13 @@ import {
   ChainMismatchError,
   StaleActionConfigurationError,
 } from './rpc'
+import {
+  type TreasuryAbis,
+  type TreasuryReads,
+  type TreasurySnapshot,
+  createTreasuryReads,
+  TreasuryChainMismatchError,
+} from './treasury'
 
 // ---------------------------------------------------------------------------
 // Wallet connection and network state
@@ -137,6 +145,72 @@ export type PublicReadResult<T> =
     }
 
 // ---------------------------------------------------------------------------
+// Treasury discovery and inspection results
+// ---------------------------------------------------------------------------
+
+export type TreasuryReadFailure =
+  | {
+      status: 'unconfigured'
+      message: string
+    }
+  | {
+      status: 'rpc-unavailable'
+      message: string
+      error: string
+    }
+  | {
+      status: 'chain-mismatch'
+      expectedChainId: number
+      actualChainId: number
+    }
+
+export interface TreasuryListItem {
+  /** Checksummed stable identity used for navigation and refresh reads. */
+  address: Address
+}
+
+export interface TreasuryDetail extends TreasurySnapshot {
+  /** Null when the deployment does not record a shared TestUSD address. */
+  isSharedFundingAsset: boolean | null
+}
+
+export type TreasuryListResult =
+  | {
+      status: 'success'
+      chainId: number
+      treasuries: TreasuryListItem[]
+    }
+  | TreasuryReadFailure
+
+export type TreasuryDetailResult =
+  | {
+      status: 'success'
+      chainId: number
+      treasury: TreasuryDetail
+    }
+  | {
+      status: 'not-found'
+      address: string
+      reason: 'invalid-address' | 'unregistered'
+    }
+  | TreasuryReadFailure
+
+function toTreasuryReadFailure(error: unknown): TreasuryReadFailure {
+  if (error instanceof TreasuryChainMismatchError) {
+    return {
+      status: 'chain-mismatch',
+      expectedChainId: error.expectedChainId,
+      actualChainId: error.actualChainId,
+    }
+  }
+  return {
+    status: 'rpc-unavailable',
+    message: 'Treasury reads could not reach the configured RPC endpoint.',
+    error: error instanceof Error ? error.message : String(error),
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Application factory
 // ---------------------------------------------------------------------------
 
@@ -161,6 +235,22 @@ export function createApplication(
       // Ignored if invalid URL
     }
   }
+
+  const treasuryReads: TreasuryReads | null =
+    rpc?.readContract && deploymentContext.daoAddress
+      ? createTreasuryReads(
+          {
+            getChainId: () => rpc!.getChainId(),
+            readContract: <T>(request: Parameters<NonNullable<RpcAdapter['readContract']>>[0]) =>
+              rpc!.readContract!<T>(request),
+          },
+          {
+            chainId: deploymentContext.chainId,
+            daoAddress: deploymentContext.daoAddress,
+            abis: publicArtifacts.abis as unknown as TreasuryAbis,
+          }
+        )
+      : null
 
   // Mutable wallet state kept inside the closure; listeners notify subscribers.
   let walletState: WalletState = { status: 'disconnected' }
@@ -336,6 +426,66 @@ export function createApplication(
           message: 'RPC endpoint is unavailable.',
           error: err instanceof Error ? err.message : String(err),
         }
+      }
+    },
+
+    /**
+     * Lists treasury identities registered by the configured DAO.
+     * Wallet-free: reads the chain through the public RPC seam only.
+     * An empty registry is a successful result, never an RPC failure.
+     */
+    async listTreasuries(): Promise<TreasuryListResult> {
+      if (!treasuryReads) {
+        return {
+          status: 'unconfigured',
+          message: 'Treasury discovery requires a configured DAO deployment and RPC endpoint.',
+        }
+      }
+      try {
+        const addresses = await treasuryReads.listTreasuries()
+        return {
+          status: 'success',
+          chainId: deploymentContext.chainId,
+          treasuries: addresses.map((address) => ({ address })),
+        }
+      } catch (err) {
+        return toTreasuryReadFailure(err)
+      }
+    },
+
+    /**
+     * Reads one registered treasury's administrator, funding asset, and current
+     * TestUSD balance. Wallet-free and scoped to the configured deployment.
+     */
+    async readTreasury(address: string): Promise<TreasuryDetailResult> {
+      if (!treasuryReads) {
+        return {
+          status: 'unconfigured',
+          message: 'Treasury inspection requires a configured DAO deployment and RPC endpoint.',
+        }
+      }
+      if (!isAddress(address)) {
+        return { status: 'not-found', address, reason: 'invalid-address' }
+      }
+      try {
+        const snapshot = await treasuryReads.readTreasury(address)
+        if (snapshot === null) {
+          return { status: 'not-found', address, reason: 'unregistered' }
+        }
+        const configuredTestUsd = deploymentContext.testUsdAddress
+        return {
+          status: 'success',
+          chainId: deploymentContext.chainId,
+          treasury: {
+            ...snapshot,
+            isSharedFundingAsset:
+              configuredTestUsd === null
+                ? null
+                : snapshot.fundingAsset.toLowerCase() === configuredTestUsd.toLowerCase(),
+          },
+        }
+      } catch (err) {
+        return toTreasuryReadFailure(err)
       }
     },
 

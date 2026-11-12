@@ -23,7 +23,9 @@
  */
 
 import { expect, test, vi } from 'vitest'
+import { getAddress } from 'viem'
 import { createApplication } from './application'
+import type { ContractReadRequest } from './treasury'
 import {
   type WalletAdapter,
   type AccountChangedListener,
@@ -797,4 +799,290 @@ test('a generic wallet error produces wallet-connect-error state', async () => {
     expect(state.error.kind).toBe('wallet-connect-error')
     expect(state.error.message).toContain('RPC timeout')
   }
+})
+
+// ---------------------------------------------------------------------------
+// Treasury discovery and inspection — issue 02.02
+// ---------------------------------------------------------------------------
+
+const TREASURY_A = '0x00000000000000000000000000000000000000a1' as const
+const TREASURY_B = '0x00000000000000000000000000000000000000b2' as const
+const SHARED_TEST_USD = '0x00000000000000000000000000000000000000c3' as const
+const ADMIN_A = '0x00000000000000000000000000000000000000d4' as const
+const ADMIN_B = '0x00000000000000000000000000000000000000e5' as const
+
+const TREASURY_DEPLOYMENT = {
+  chainId: 31337,
+  daoAddress: TREASURY_A,
+  testUsdAddress: SHARED_TEST_USD,
+} as const
+
+interface TreasuryRpcState {
+  chainId: number
+  treasuries: string[]
+  administrators: Record<string, string>
+  fundingAsset: string
+  symbol: string
+  decimals: number
+  balances: Record<string, bigint>
+  failure: Error | null
+}
+
+function key(address: string): string {
+  return address.toLowerCase()
+}
+
+function makeTreasuryState(overrides: Partial<TreasuryRpcState> = {}): TreasuryRpcState {
+  return {
+    chainId: 31337,
+    treasuries: [],
+    administrators: {},
+    fundingAsset: SHARED_TEST_USD,
+    symbol: 'TUSD',
+    decimals: 18,
+    balances: {},
+    failure: null,
+    ...overrides,
+  }
+}
+
+type TreasuryRpc = RpcAdapter & { readContract: ReturnType<typeof vi.fn> }
+
+function makeTreasuryRpc(state: TreasuryRpcState): TreasuryRpc {
+  const readContract = vi.fn(async (request: ContractReadRequest): Promise<unknown> => {
+    if (state.failure) throw state.failure
+    const args = request.args ?? []
+    switch (request.functionName) {
+      case 'getTreasuries':
+        return state.treasuries
+      case 'isTreasury':
+        return state.treasuries.some((address) => key(address) === key(args[0] as string))
+      case 'administrator':
+        return state.administrators[key(request.address)]
+      case 'fundingAsset':
+        return state.fundingAsset
+      case 'symbol':
+        return state.symbol
+      case 'decimals':
+        return state.decimals
+      case 'balanceOf':
+        return state.balances[key(args[0] as string)] ?? 0n
+      default:
+        throw new Error(`Unexpected read: ${request.functionName}`)
+    }
+  })
+
+  return {
+    getChainId: vi.fn(async () => state.chainId),
+    getBlockNumber: vi.fn(async () => 1n),
+    readContract,
+  } as TreasuryRpc
+}
+
+test('a wallet-free visitor sees an empty treasury registry as a successful result', async () => {
+  const rpc = makeTreasuryRpc(makeTreasuryState())
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  const result = await app.listTreasuries()
+
+  expect(result).toEqual({ status: 'success', chainId: 31337, treasuries: [] })
+  expect(app.readWalletAccount()).toEqual({ status: 'disconnected' })
+})
+
+test('treasury discovery ignores wallet account and wallet network state', async () => {
+  const adapter = makeAdapter({
+    connect: vi.fn().mockResolvedValue(ACCOUNT_A),
+    getChainId: vi.fn().mockResolvedValue(1),
+  })
+  const rpc = makeTreasuryRpc(makeTreasuryState({ treasuries: [TREASURY_A] }))
+  const app = createApplication(adapter, rpc, TREASURY_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.listTreasuries()
+
+  expect(result.status).toBe('success')
+  if (result.status === 'success') {
+    expect(result.treasuries.map((item) => item.address)).toEqual([getAddress(TREASURY_A)])
+  }
+  // The read did not depend on the mismatched wallet chain.
+  expect(app.readNetworkState().status).toBe('mismatched')
+})
+
+test('discovers multiple treasuries by stable identity without duplicating on retry', async () => {
+  const rpc = makeTreasuryRpc(
+    makeTreasuryState({
+      treasuries: [TREASURY_A, TREASURY_B, TREASURY_A],
+    })
+  )
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  const first = await app.listTreasuries()
+  const second = await app.listTreasuries()
+
+  expect(first.status).toBe('success')
+  expect(second).toEqual(first)
+  if (first.status === 'success') {
+    expect(first.treasuries.map((item) => item.address)).toEqual([
+      getAddress(TREASURY_A),
+      getAddress(TREASURY_B),
+    ])
+  }
+})
+
+test('inspects a registered treasury with its administrator, shared TestUSD identity, and zero balance', async () => {
+  const rpc = makeTreasuryRpc(
+    makeTreasuryState({
+      treasuries: [TREASURY_A],
+      administrators: { [key(TREASURY_A)]: ADMIN_A },
+    })
+  )
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  const result = await app.readTreasury(TREASURY_A.toLowerCase())
+
+  expect(result.status).toBe('success')
+  if (result.status === 'success') {
+    expect(result.chainId).toBe(31337)
+    expect(result.treasury.address).toBe(getAddress(TREASURY_A))
+    expect(result.treasury.administrator).toBe(getAddress(ADMIN_A))
+    expect(result.treasury.fundingAsset).toBe(getAddress(SHARED_TEST_USD))
+    expect(result.treasury.isSharedFundingAsset).toBe(true)
+    expect(result.treasury.fundingAssetSymbol).toBe('TUSD')
+    expect(result.treasury.fundingAssetDecimals).toBe(18)
+    expect(result.treasury.balance).toBe(0n)
+    expect(result.treasury.formattedBalance).toBe('0')
+  }
+})
+
+test('formats the current balance with the funding asset decimals', async () => {
+  const rpc = makeTreasuryRpc(
+    makeTreasuryState({
+      treasuries: [TREASURY_A],
+      administrators: { [key(TREASURY_A)]: ADMIN_A },
+      balances: { [key(TREASURY_A)]: 12_345_600_000_000_000_000n },
+    })
+  )
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  const result = await app.readTreasury(TREASURY_A)
+
+  expect(result.status).toBe('success')
+  if (result.status === 'success') {
+    expect(result.treasury.balance).toBe(12_345_600_000_000_000_000n)
+    expect(result.treasury.formattedBalance).toBe('12.3456')
+  }
+})
+
+test('different treasuries keep independent administrators and balances', async () => {
+  const rpc = makeTreasuryRpc(
+    makeTreasuryState({
+      treasuries: [TREASURY_A, TREASURY_B],
+      administrators: {
+        [key(TREASURY_A)]: ADMIN_A,
+        [key(TREASURY_B)]: ADMIN_B,
+      },
+      balances: {
+        [key(TREASURY_A)]: 1_000_000_000_000_000_000n,
+        [key(TREASURY_B)]: 5_000_000_000_000_000_000n,
+      },
+    })
+  )
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  const a = await app.readTreasury(TREASURY_A)
+  const b = await app.readTreasury(TREASURY_B)
+
+  expect(a.status).toBe('success')
+  expect(b.status).toBe('success')
+  if (a.status === 'success' && b.status === 'success') {
+    expect(a.treasury.address).toBe(getAddress(TREASURY_A))
+    expect(a.treasury.administrator).toBe(getAddress(ADMIN_A))
+    expect(a.treasury.formattedBalance).toBe('1')
+    expect(b.treasury.address).toBe(getAddress(TREASURY_B))
+    expect(b.treasury.administrator).toBe(getAddress(ADMIN_B))
+    expect(b.treasury.formattedBalance).toBe('5')
+  }
+})
+
+test('refresh reads reflect a confirmed external deposit', async () => {
+  const state = makeTreasuryState({
+    treasuries: [TREASURY_A],
+    administrators: { [key(TREASURY_A)]: ADMIN_A },
+  })
+  const rpc = makeTreasuryRpc(state)
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  const before = await app.readTreasury(TREASURY_A)
+  state.balances[key(TREASURY_A)] = 7_500_000_000_000_000_000n
+  const after = await app.readTreasury(TREASURY_A)
+
+  expect(before.status).toBe('success')
+  expect(after.status).toBe('success')
+  if (before.status === 'success' && after.status === 'success') {
+    expect(before.treasury.formattedBalance).toBe('0')
+    expect(after.treasury.formattedBalance).toBe('7.5')
+  }
+})
+
+test('distinguishes an unregistered or malformed treasury from an RPC failure', async () => {
+  const rpc = makeTreasuryRpc(makeTreasuryState({ treasuries: [TREASURY_A] }))
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  const unregistered = await app.readTreasury(TREASURY_B)
+  const malformed = await app.readTreasury('not-an-address')
+
+  expect(unregistered).toEqual({
+    status: 'not-found',
+    address: TREASURY_B,
+    reason: 'unregistered',
+  })
+  expect(malformed).toEqual({
+    status: 'not-found',
+    address: 'not-an-address',
+    reason: 'invalid-address',
+  })
+})
+
+test('reports an RPC failure distinctly and recovers on retry without duplicating treasuries', async () => {
+  const state = makeTreasuryState({ treasuries: [TREASURY_A, TREASURY_B] })
+  const rpc = makeTreasuryRpc(state)
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  state.failure = new Error('connect ECONNREFUSED')
+  const failure = await app.listTreasuries()
+  expect(failure.status).toBe('rpc-unavailable')
+  if (failure.status === 'rpc-unavailable') {
+    expect(failure.error).toContain('ECONNREFUSED')
+  }
+
+  state.failure = null
+  const retry = await app.listTreasuries()
+  expect(retry.status).toBe('success')
+  if (retry.status === 'success') {
+    expect(retry.treasuries).toHaveLength(2)
+  }
+})
+
+test('reports a deployment chain mismatch instead of mixing another chain state', async () => {
+  const rpc = makeTreasuryRpc(makeTreasuryState({ chainId: 1, treasuries: [TREASURY_A] }))
+  const app = createApplication(undefined, rpc, TREASURY_DEPLOYMENT)
+
+  const result = await app.listTreasuries()
+
+  expect(result).toEqual({
+    status: 'chain-mismatch',
+    expectedChainId: 31337,
+    actualChainId: 1,
+  })
+})
+
+test('treasury reads are unconfigured without a deployment or RPC seam', async () => {
+  const app = createApplication(undefined, undefined, {
+    chainId: 999999,
+    daoAddress: null,
+    rpcUrl: undefined,
+  })
+
+  expect((await app.listTreasuries()).status).toBe('unconfigured')
+  expect((await app.readTreasury(TREASURY_A)).status).toBe('unconfigured')
 })
