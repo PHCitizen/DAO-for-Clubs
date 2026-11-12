@@ -1,4 +1,4 @@
-import { getSupportedChain } from './networks'
+import { getSupportedChain } from './networks.js'
 
 /**
  * WalletAdapter is the external seam between the application and the browser
@@ -21,6 +21,7 @@ export interface ChainChangedEvent {
 export type ChainChangedListener = (event: ChainChangedEvent) => void
 
 export interface WalletAdapter {
+  sendTransaction?(transaction: { account: Address; to: Address; data: `0x${string}` }): Promise<`0x${string}`>
   /** Request the user to connect. Resolves with the first selected address. */
   connect(): Promise<Address>
   /** Disconnect / clear the session. */
@@ -62,6 +63,11 @@ function getProvider(): Eip1193Provider | undefined {
  */
 export function createBrowserWalletAdapter(): WalletAdapter {
   return {
+    async sendTransaction({ account, to, data }) {
+      const provider = getProvider()
+      if (!provider) throw new WalletUnavailableError()
+      return await provider.request({ method: 'eth_sendTransaction', params: [{ from: account, to, data }] }) as `0x${string}`
+    },
     isAvailable() {
       return getProvider() !== undefined
     },

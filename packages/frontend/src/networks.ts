@@ -1,5 +1,5 @@
-import publicArtifacts from './generated/public-artifacts.json'
-import type { Address } from './wallet'
+import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
+import type { Address } from './wallet.js'
 
 export interface ChainDefinition {
   chainId: number

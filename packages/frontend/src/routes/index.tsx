@@ -8,6 +8,7 @@ import {
   type PublicDeploymentStatus,
 } from '../application'
 import { createBrowserWalletAdapter } from '../wallet'
+import { FundingPanel } from './-funding'
 
 export const Route = createFileRoute('/')({ component: Home })
 
@@ -158,6 +159,7 @@ function Home() {
           />
         </div>
       </section>
+      <FundingPanel app={app} />
     </main>
   )
 }
