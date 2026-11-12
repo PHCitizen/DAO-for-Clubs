@@ -4,7 +4,7 @@
 **Spec:** [Feature 02: Treasuries, TestUSD, and voting membership](../spec.md)
 **What to build:** A TestUSD holder can fund a registered treasury and verify the confirmed amount and updated balance.
 **Blocked by:** [02.01 — Create a treasury and assign its administrator](01-create-treasury.md).
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Acceptance criteria
 
