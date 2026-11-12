@@ -2,5 +2,9 @@
   "chainId": 31337,
   "daoAddress": null,
   "testUsdAddress": null,
-  "artifacts": {}
+  "artifacts": {
+    "DAO": "contracts/DAO.sol/DAO.json",
+    "TestUSD": "contracts/TestUSD.sol/TestUSD.json",
+    "Treasury": "contracts/Treasury.sol/Treasury.json"
+  }
 }
