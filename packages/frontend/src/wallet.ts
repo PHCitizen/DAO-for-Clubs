@@ -1,3 +1,5 @@
+import { getSupportedChain } from './networks'
+
 /**
  * WalletAdapter is the external seam between the application and the browser
  * wallet. The application never touches window.ethereum directly; it uses this
@@ -12,6 +14,12 @@ export interface AccountChangedEvent {
 
 export type AccountChangedListener = (event: AccountChangedEvent) => void
 
+export interface ChainChangedEvent {
+  chainId: number
+}
+
+export type ChainChangedListener = (event: ChainChangedEvent) => void
+
 export interface WalletAdapter {
   /** Request the user to connect. Resolves with the first selected address. */
   connect(): Promise<Address>
@@ -19,8 +27,14 @@ export interface WalletAdapter {
   disconnect(): Promise<void>
   /** Return the currently connected address without prompting the user. */
   getAccount(): Promise<Address | null>
+  /** Return the currently connected chain ID (or null if not connected/available). */
+  getChainId(): Promise<number | null>
   /** Subscribe to account changes (switch or disconnect). Returns unsubscribe. */
   onAccountChanged(listener: AccountChangedListener): () => void
+  /** Subscribe to chain/network changes. Returns unsubscribe. */
+  onChainChanged(listener: ChainChangedListener): () => void
+  /** Request the wallet to switch to the specified chain ID. */
+  switchChain(chainId: number): Promise<void>
   /** True when a compatible EIP-1193 provider is available in the browser. */
   isAvailable(): boolean
 }
@@ -86,6 +100,17 @@ export function createBrowserWalletAdapter(): WalletAdapter {
       return accounts && accounts.length > 0 ? (accounts[0] as Address) : null
     },
 
+    async getChainId(): Promise<number | null> {
+      const provider = getProvider()
+      if (!provider) return null
+      try {
+        const hex = (await provider.request({ method: 'eth_chainId' })) as string
+        return hex ? parseInt(hex, 16) : null
+      } catch {
+        return null
+      }
+    },
+
     onAccountChanged(listener: AccountChangedListener): () => void {
       const provider = getProvider()
       if (!provider) return () => {}
@@ -95,6 +120,66 @@ export function createBrowserWalletAdapter(): WalletAdapter {
       }
       provider.on('accountsChanged', handler)
       return () => provider.removeListener('accountsChanged', handler)
+    },
+
+    onChainChanged(listener: ChainChangedListener): () => void {
+      const provider = getProvider()
+      if (!provider) return () => {}
+      const handler = (chainIdHex: unknown) => {
+        const parsed = parseInt(chainIdHex as string, 16)
+        if (!isNaN(parsed)) {
+          listener({ chainId: parsed })
+        }
+      }
+      provider.on('chainChanged', handler)
+      return () => provider.removeListener('chainChanged', handler)
+    },
+
+    async switchChain(chainId: number): Promise<void> {
+      const provider = getProvider()
+      if (!provider) throw new WalletUnavailableError()
+      const hexChainId = `0x${chainId.toString(16)}`
+      try {
+        await provider.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: hexChainId }],
+        })
+      } catch (err: unknown) {
+        if (err && typeof err === 'object') {
+          const code = 'code' in err ? (err as { code: number }).code : undefined
+          // EIP-1193 4001: User rejected
+          if (code === 4001) {
+            throw new NetworkSwitchRejectedError()
+          }
+          // EIP-1193 4902: Unrecognized chain — attempt to add if supported
+          if (code === 4902) {
+            const chain = getSupportedChain(chainId)
+            if (chain) {
+              try {
+                await provider.request({
+                  method: 'wallet_addEthereumChain',
+                  params: [
+                    {
+                      chainId: hexChainId,
+                      chainName: chain.name,
+                      nativeCurrency: chain.nativeCurrency,
+                      rpcUrls: chain.rpcUrls,
+                      blockExplorerUrls: chain.blockExplorerUrls,
+                    },
+                  ],
+                })
+                return
+              } catch (addErr: unknown) {
+                if (addErr && typeof addErr === 'object' && 'code' in addErr && (addErr as { code: number }).code === 4001) {
+                  throw new NetworkSwitchRejectedError()
+                }
+                throw new NetworkSwitchError(addErr instanceof Error ? addErr.message : String(addErr))
+              }
+            }
+          }
+        }
+        throw new NetworkSwitchError(err instanceof Error ? err.message : String(err))
+      }
     },
   }
 }
@@ -127,12 +212,49 @@ export class WalletRejectedError extends Error {
   }
 }
 
+export class NetworkSwitchRejectedError extends Error {
+  readonly kind = 'network-switch-rejected' as const
+  constructor() {
+    super('Network switch request was rejected. You can try again.')
+    this.name = 'NetworkSwitchRejectedError'
+  }
+}
+
+export class NetworkSwitchError extends Error {
+  readonly kind = 'network-switch-error' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'NetworkSwitchError'
+  }
+}
+
+export class UnsupportedChainError extends Error {
+  readonly kind = 'unsupported-chain' as const
+  readonly chainId: number
+  constructor(chainId: number) {
+    super(`Chain ID ${chainId} is not supported by this deployment.`)
+    this.name = 'UnsupportedChainError'
+    this.chainId = chainId
+  }
+}
+
+export type DomainWalletError =
+  | WalletUnavailableError
+  | WalletRejectedError
+  | WalletConnectError
+  | NetworkSwitchRejectedError
+  | NetworkSwitchError
+  | UnsupportedChainError
+
 /** Normalize raw wallet errors to domain errors. */
-export function normalizeWalletError(err: unknown): WalletUnavailableError | WalletRejectedError | WalletConnectError {
+export function normalizeWalletError(err: unknown): DomainWalletError {
   if (
     err instanceof WalletUnavailableError ||
     err instanceof WalletRejectedError ||
-    err instanceof WalletConnectError
+    err instanceof WalletConnectError ||
+    err instanceof NetworkSwitchRejectedError ||
+    err instanceof NetworkSwitchError ||
+    err instanceof UnsupportedChainError
   ) {
     return err
   }

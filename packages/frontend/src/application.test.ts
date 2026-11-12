@@ -1,8 +1,8 @@
 /**
- * Behavioral tests for wallet connection — issue 01.02.
+ * Behavioral tests for wallet connection and network validation — issues 01.02 & 01.03.
  *
- * All tests go through createApplication() with controlled WalletAdapter
- * stubs. No React hooks, no DOM, no browser APIs are involved.
+ * All tests go through createApplication() with controlled WalletAdapter and
+ * RpcAdapter stubs. No React hooks, no DOM, no browser APIs are involved.
  *
  * Real-wallet smoke check
  * -----------------------
@@ -10,10 +10,16 @@
  *   1. `pnpm dev`
  *   2. Open http://localhost:3000 in a browser with the extension installed.
  *   3. Click "Connect wallet" — confirm the extension prompt appears.
- *   4. Approve the connection — confirm the address appears in the UI.
- *   5. Switch accounts in the extension — confirm the UI updates immediately.
- *   6. Disconnect in the extension — confirm the UI returns to disconnected state.
- *   7. Click "Connect wallet" again — confirm reconnect works without reload.
+ *   4. Approve the connection — confirm the address and network appear in the UI.
+ *   5. In the extension, switch to a different network (e.g. Ethereum Mainnet) —
+ *      confirm the UI displays a "Wrong network" alert explaining the mismatch and
+ *      offers a button to switch to the supported chain.
+ *   6. Click "Switch to BNB Smart Chain Testnet" (or configured chain):
+ *      - Click "Reject" in the extension — confirm UI displays rejection alert with "Try again".
+ *      - Click "Try again" and approve in the extension — confirm UI updates to matched.
+ *   7. Switch accounts in the extension — confirm the UI updates immediately.
+ *   8. Disconnect in the extension — confirm the UI returns to disconnected state.
+ *   9. Click "Connect wallet" again — confirm reconnect works without reload.
  */
 
 import { expect, test, vi } from 'vitest'
@@ -21,10 +27,22 @@ import { createApplication } from './application'
 import {
   type WalletAdapter,
   type AccountChangedListener,
+  type ChainChangedListener,
   WalletRejectedError,
   WalletUnavailableError,
   WalletConnectError,
+  NetworkSwitchRejectedError,
+  NetworkSwitchError,
 } from './wallet'
+import {
+  type RpcAdapter,
+  WalletNotConnectedError,
+  DeploymentNotDeployedError,
+  DeploymentNotConfiguredError,
+  ChainMismatchError,
+  StaleActionConfigurationError,
+  RpcUnavailableError,
+} from './rpc'
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -33,25 +51,37 @@ import {
 type ControlledAdapter = WalletAdapter & {
   /** Simulate the wallet firing an accountsChanged event. */
   simulateAccountChange(account: `0x${string}` | null): void
+  /** Simulate the wallet firing a chainChanged event. */
+  simulateChainChange(chainId: number): void
 }
 
 function makeAdapter(overrides?: Partial<WalletAdapter>): ControlledAdapter {
   let accountChangeListener: AccountChangedListener | null = null
+  let chainChangeListener: ChainChangedListener | null = null
 
   const defaults: WalletAdapter = {
     isAvailable: () => true,
     connect: vi.fn().mockResolvedValue('0xABCDEF0123456789ABCDEF0123456789ABCDEF01' as `0x${string}`),
     disconnect: vi.fn().mockResolvedValue(undefined),
     getAccount: vi.fn().mockResolvedValue(null),
+    getChainId: vi.fn().mockResolvedValue(31337),
     onAccountChanged(listener) {
       accountChangeListener = listener
       return () => { accountChangeListener = null }
     },
+    onChainChanged(listener) {
+      chainChangeListener = listener
+      return () => { chainChangeListener = null }
+    },
+    switchChain: vi.fn().mockResolvedValue(undefined),
   }
 
   return Object.assign({}, defaults, overrides, {
     simulateAccountChange(account: `0x${string}` | null) {
       accountChangeListener?.({ account })
+    },
+    simulateChainChange(chainId: number) {
+      chainChangeListener?.({ chainId })
     },
   })
 }
@@ -82,6 +112,431 @@ test('read-only content is accessible without a wallet adapter', () => {
   const home = application.readHome()
   expect(home.title).toBe('DAO for Clubs')
   expect(home.description).toContain('No wallet required')
+})
+
+// ---------------------------------------------------------------------------
+// Deployment and network context — issue 01.03
+// ---------------------------------------------------------------------------
+
+test('displays configured deployment context with default local development chain', () => {
+  const application = createApplication()
+  const deployment = application.readDeployment()
+  expect(deployment.chainId).toBe(31337)
+  expect(deployment.chainName).toBe('Local Development')
+  expect(deployment.isSupported).toBe(true)
+  expect(deployment.daoAddress).toBeNull()
+  expect(deployment.isDeployed).toBe(false)
+})
+
+test('supports configuring BNB Smart Chain testnet deployment context', () => {
+  const application = createApplication(undefined, undefined, {
+    chainId: 97,
+    daoAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
+  })
+  const deployment = application.readDeployment()
+  expect(deployment.chainId).toBe(97)
+  expect(deployment.chainName).toBe('BNB Smart Chain Testnet')
+  expect(deployment.isSupported).toBe(true)
+  expect(deployment.daoAddress).toBe('0x1234567890123456789012345678901234567890')
+  expect(deployment.isDeployed).toBe(true)
+})
+
+test('treats chain ID and canonical DAO address as deployment identity and accommodates not-yet-deployed DAO', () => {
+  const application = createApplication(undefined, undefined, {
+    chainId: 97,
+    daoAddress: null,
+  })
+  const deployment = application.readDeployment()
+  expect(deployment.chainId).toBe(97)
+  expect(deployment.daoAddress).toBeNull()
+  expect(deployment.isDeployed).toBe(false)
+})
+
+// ---------------------------------------------------------------------------
+// Network state tracking and mismatch detection — issue 01.03
+// ---------------------------------------------------------------------------
+
+test('network state starts as disconnected with configured chain context', () => {
+  const application = createApplication(undefined, undefined, { chainId: 97 })
+  expect(application.readNetworkState()).toEqual({
+    status: 'disconnected',
+    configuredChainId: 97,
+    configuredChainName: 'BNB Smart Chain Testnet',
+    isSupported: true,
+  })
+})
+
+test('detects matched network when connected to the configured chain', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(97),
+  })
+  const application = createApplication(adapter, undefined, { chainId: 97 })
+  await application.connect()
+
+  expect(application.readNetworkState()).toEqual({
+    status: 'matched',
+    configuredChainId: 97,
+    configuredChainName: 'BNB Smart Chain Testnet',
+    walletChainId: 97,
+  })
+})
+
+test('detects mismatched network when wallet is on another chain', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(1), // Ethereum Mainnet
+  })
+  const application = createApplication(adapter, undefined, { chainId: 97 })
+  await application.connect()
+
+  const networkState = application.readNetworkState()
+  expect(networkState.status).toBe('mismatched')
+  if (networkState.status === 'mismatched') {
+    expect(networkState.configuredChainId).toBe(97)
+    expect(networkState.walletChainId).toBe(1)
+    expect(networkState.canSwitch).toBe(true)
+  }
+})
+
+test('notifies listeners when wallet changes network via chainChanged event', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(97),
+  })
+  const application = createApplication(adapter, undefined, { chainId: 97 })
+  await application.connect()
+
+  expect(application.readNetworkState().status).toBe('matched')
+
+  const networkListener = vi.fn()
+  application.onNetworkStateChanged(networkListener)
+
+  // Wallet switches to chain 1
+  adapter.simulateChainChange(1)
+
+  expect(application.readNetworkState()).toEqual({
+    status: 'mismatched',
+    configuredChainId: 97,
+    configuredChainName: 'BNB Smart Chain Testnet',
+    walletChainId: 1,
+    walletChainName: 'Unsupported Chain (1)',
+    canSwitch: true,
+  })
+  expect(networkListener).toHaveBeenCalledWith(expect.objectContaining({
+    status: 'mismatched',
+    walletChainId: 1,
+  }))
+
+  // Wallet switches back to 97
+  adapter.simulateChainChange(97)
+  expect(application.readNetworkState().status).toBe('matched')
+})
+
+test('clears network state to disconnected when wallet disconnects', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(97),
+  })
+  const application = createApplication(adapter, undefined, { chainId: 97 })
+  await application.connect()
+  expect(application.readNetworkState().status).toBe('matched')
+
+  await application.disconnect()
+  expect(application.readNetworkState()).toEqual({
+    status: 'disconnected',
+    configuredChainId: 97,
+    configuredChainName: 'BNB Smart Chain Testnet',
+    isSupported: true,
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Network switching and retry feedback — issue 01.03
+// ---------------------------------------------------------------------------
+
+test('switchNetwork triggers wallet adapter switchChain and transitions to matched on success', async () => {
+  let simulatedChain = 1
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockImplementation(async () => simulatedChain),
+    switchChain: vi.fn().mockImplementation(async (targetChainId: number) => {
+      simulatedChain = targetChainId
+      adapter.simulateChainChange(targetChainId)
+    }),
+  })
+  const application = createApplication(adapter, undefined, { chainId: 97 })
+  await application.connect()
+  expect(application.readNetworkState().status).toBe('mismatched')
+
+  await application.switchNetwork()
+
+  expect(adapter.switchChain).toHaveBeenCalledWith(97)
+  expect(application.readNetworkState()).toEqual({
+    status: 'matched',
+    configuredChainId: 97,
+    configuredChainName: 'BNB Smart Chain Testnet',
+    walletChainId: 97,
+  })
+})
+
+test('switchNetwork user rejection transitions to switch-error and allows retry without reload', async () => {
+  let shouldReject = true
+  let simulatedChain = 1
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockImplementation(async () => simulatedChain),
+    switchChain: vi.fn().mockImplementation(async (targetChainId: number) => {
+      if (shouldReject) {
+        throw new NetworkSwitchRejectedError()
+      }
+      simulatedChain = targetChainId
+      adapter.simulateChainChange(targetChainId)
+    }),
+  })
+  const application = createApplication(adapter, undefined, { chainId: 97 })
+  await application.connect()
+  expect(application.readNetworkState().status).toBe('mismatched')
+
+  // First attempt rejected by user
+  await application.switchNetwork()
+
+  const errorState = application.readNetworkState()
+  expect(errorState.status).toBe('switch-error')
+  if (errorState.status === 'switch-error') {
+    expect(errorState.configuredChainId).toBe(97)
+    expect(errorState.walletChainId).toBe(1)
+    expect(errorState.error.kind).toBe('network-switch-rejected')
+  }
+
+  // Second attempt (retry) succeeds without page reload
+  shouldReject = false
+  await application.switchNetwork()
+
+  expect(application.readNetworkState()).toEqual({
+    status: 'matched',
+    configuredChainId: 97,
+    configuredChainName: 'BNB Smart Chain Testnet',
+    walletChainId: 97,
+  })
+})
+
+test('switchNetwork with general switch error surfaces error and allows retry', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(1),
+    switchChain: vi.fn().mockRejectedValue(new NetworkSwitchError('Failed to switch RPC endpoint')),
+  })
+  const application = createApplication(adapter, undefined, { chainId: 97 })
+  await application.connect()
+  expect(application.readNetworkState().status).toBe('mismatched')
+
+  await application.switchNetwork()
+
+  const errorState = application.readNetworkState()
+  expect(errorState.status).toBe('switch-error')
+  if (errorState.status === 'switch-error') {
+    expect(errorState.error.kind).toBe('network-switch-error')
+    expect(errorState.error.message).toContain('Failed to switch RPC endpoint')
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Action preparation and staleness prevention — issue 01.03
+// ---------------------------------------------------------------------------
+
+test('action preparation fails when wallet is not connected', async () => {
+  const application = createApplication(undefined, undefined, {
+    chainId: 97,
+    daoAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
+  })
+  await expect(application.prepareDeploymentAction()).rejects.toThrow(WalletNotConnectedError)
+})
+
+test('action preparation fails when DAO is not deployed on the configured chain', async () => {
+  const adapter = makeAdapter({ getChainId: vi.fn().mockResolvedValue(97) })
+  const application = createApplication(adapter, undefined, {
+    chainId: 97,
+    daoAddress: null,
+  })
+  await application.connect()
+
+  await expect(application.prepareDeploymentAction()).rejects.toThrow(DeploymentNotDeployedError)
+})
+
+test('action preparation fails when wallet chain does not match deployment chain', async () => {
+  const adapter = makeAdapter({ getChainId: vi.fn().mockResolvedValue(1) }) // Chain 1
+  const application = createApplication(adapter, undefined, {
+    chainId: 97,
+    daoAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
+  })
+  await application.connect()
+
+  await expect(application.prepareDeploymentAction()).rejects.toThrow(ChainMismatchError)
+})
+
+test('action preparation succeeds with valid deployment context when connected to correct chain', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(97),
+    connect: vi.fn().mockResolvedValue(ACCOUNT_A),
+  })
+  const application = createApplication(adapter, undefined, {
+    chainId: 97,
+    daoAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
+  })
+  await application.connect()
+
+  const prepared = await application.prepareDeploymentAction()
+  expect(prepared.context).toEqual({
+    account: ACCOUNT_A,
+    chainId: 97,
+    targetAddress: '0x1234567890123456789012345678901234567890',
+  })
+  expect(() => prepared.assertValid()).not.toThrow()
+})
+
+test('action preparation rejects with StaleActionConfigurationError if wallet chain changes during preparation', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(97),
+    connect: vi.fn().mockResolvedValue(ACCOUNT_A),
+  })
+  const application = createApplication(adapter, undefined, {
+    chainId: 97,
+    daoAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
+  })
+  await application.connect()
+
+  // Simulate wallet chain changing during async preparation step
+  await expect(
+    application.prepareDeploymentAction({
+      verify: async () => {
+        adapter.simulateChainChange(1) // Chain switched mid-prep!
+      },
+    })
+  ).rejects.toThrow(StaleActionConfigurationError)
+})
+
+test('action preparation rejects with StaleActionConfigurationError if wallet account changes during preparation', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(97),
+    connect: vi.fn().mockResolvedValue(ACCOUNT_A),
+  })
+  const application = createApplication(adapter, undefined, {
+    chainId: 97,
+    daoAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
+  })
+  await application.connect()
+
+  // Simulate wallet account changing during async preparation step
+  await expect(
+    application.prepareDeploymentAction({
+      verify: async () => {
+        adapter.simulateAccountChange(ACCOUNT_B) // Account switched mid-prep!
+      },
+    })
+  ).rejects.toThrow(StaleActionConfigurationError)
+})
+
+test('prepared action execute rejects with StaleActionConfigurationError if chain or account changes before execution', async () => {
+  const adapter = makeAdapter({
+    getChainId: vi.fn().mockResolvedValue(97),
+    connect: vi.fn().mockResolvedValue(ACCOUNT_A),
+  })
+  const application = createApplication(adapter, undefined, {
+    chainId: 97,
+    daoAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
+  })
+  await application.connect()
+
+  const prepared = await application.prepareDeploymentAction()
+
+  // User changes account after prepare but before execute
+  adapter.simulateAccountChange(ACCOUNT_B)
+
+  await expect(
+    prepared.execute(async (ctx) => {
+      return `executed for ${ctx.account}`
+    })
+  ).rejects.toThrow(StaleActionConfigurationError)
+})
+
+// ---------------------------------------------------------------------------
+// Public reads without wallet and RPC error distinction — issue 01.03
+// ---------------------------------------------------------------------------
+
+test('queryPublicDeployment succeeds without wallet connection when RPC is available', async () => {
+  const rpcAdapter: RpcAdapter = {
+    getChainId: vi.fn().mockResolvedValue(97),
+    getBlockNumber: vi.fn().mockResolvedValue(1000n),
+  }
+  const application = createApplication(undefined, rpcAdapter, {
+    chainId: 97,
+    daoAddress: '0x1234567890123456789012345678901234567890' as `0x${string}`,
+  })
+
+  const result = await application.queryPublicDeployment()
+  expect(result).toEqual({
+    status: 'available',
+    chainId: 97,
+    blockNumber: 1000n,
+    daoAddress: '0x1234567890123456789012345678901234567890',
+    isDeployed: true,
+  })
+})
+
+test('queryPublicDeployment returns unconfigured when no RPC adapter or URL is configured', async () => {
+  const application = createApplication(undefined, undefined, {
+    chainId: 999999, // Unknown chain with no RPC URL
+    rpcUrl: undefined,
+  })
+
+  const result = await application.queryPublicDeployment()
+  expect(result.status).toBe('unconfigured')
+})
+
+test('queryPublicDeployment returns rpc-unavailable when RPC fails', async () => {
+  const rpcAdapter: RpcAdapter = {
+    getChainId: vi.fn().mockRejectedValue(new RpcUnavailableError('Network connection refused')),
+    getBlockNumber: vi.fn().mockRejectedValue(new RpcUnavailableError('Network connection refused')),
+  }
+  const application = createApplication(undefined, rpcAdapter, { chainId: 97 })
+
+  const result = await application.queryPublicDeployment()
+  expect(result.status).toBe('rpc-unavailable')
+  if (result.status === 'rpc-unavailable') {
+    expect(result.error).toContain('Network connection refused')
+  }
+})
+
+test('queryPublicData returns success with empty result when query yields empty array', async () => {
+  const rpcAdapter: RpcAdapter = {
+    getChainId: vi.fn().mockResolvedValue(97),
+    getBlockNumber: vi.fn().mockResolvedValue(1000n),
+  }
+  const application = createApplication(undefined, rpcAdapter, { chainId: 97 })
+
+  const result = await application.queryPublicData(async () => {
+    return [] // Empty list of items returned by contract
+  })
+
+  expect(result).toEqual({
+    status: 'success',
+    data: [],
+    chainId: 97,
+  })
+})
+
+test('queryPublicData distinguishes RPC failure from an empty successful result', async () => {
+  const rpcAdapter: RpcAdapter = {
+    getChainId: vi.fn().mockResolvedValue(97),
+    getBlockNumber: vi.fn().mockResolvedValue(1000n),
+  }
+  const application = createApplication(undefined, rpcAdapter, { chainId: 97 })
+
+  // When RPC fails (e.g. timeout / connection failure)
+  const failedResult = await application.queryPublicData(async () => {
+    throw new RpcUnavailableError('504 Gateway Timeout')
+  })
+
+  expect(failedResult.status).toBe('rpc-unavailable')
+  if (failedResult.status === 'rpc-unavailable') {
+    expect(failedResult.error).toContain('504 Gateway Timeout')
+  }
+  // It is NOT mistaken for an empty success result
+  expect(failedResult.status).not.toBe('success')
 })
 
 // ---------------------------------------------------------------------------
