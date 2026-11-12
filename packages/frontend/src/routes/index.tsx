@@ -1,20 +1,13 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import {
-  createApplication,
-  type Application,
   type WalletState,
   type NetworkState,
   type PublicDeploymentStatus,
 } from '../application'
-import { createBrowserWalletAdapter } from '../wallet'
+import { app } from '../applicationInstance'
 
 export const Route = createFileRoute('/')({ component: Home })
-
-// Application instance is created once per page load, outside React, so that
-// wallet and network state survive re-renders and hot-module replacement doesn't create
-// duplicate listeners.
-const app: Application = createApplication(createBrowserWalletAdapter())
 
 function useWalletState(): WalletState {
   const [state, setState] = useState<WalletState>(() => app.readWalletAccount())
@@ -77,6 +70,15 @@ function Home() {
       </p>
       <h1 className="text-4xl font-bold tracking-tight">{home.title}</h1>
       <p className="mt-6 text-lg text-slate-600">{home.description}</p>
+
+      <div className="mt-8">
+        <Link
+          to="/treasuries"
+          className="inline-flex rounded-lg bg-emerald-700 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+        >
+          Browse treasuries
+        </Link>
+      </div>
 
       {/* Deployment & Network Context */}
       <section

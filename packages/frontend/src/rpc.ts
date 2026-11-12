@@ -1,5 +1,6 @@
-import { createPublicClient, http } from 'viem'
+import { createPublicClient, http, type Abi } from 'viem'
 import type { Address } from './wallet'
+import type { ContractReadRequest } from './treasury'
 
 // ---------------------------------------------------------------------------
 // Domain errors
@@ -71,6 +72,12 @@ export class RpcUnavailableError extends Error {
 export interface RpcAdapter {
   getChainId(): Promise<number>
   getBlockNumber(): Promise<bigint>
+  /**
+   * Executes a public view/pure contract call without a wallet. Optional so
+   * simple chain-status adapters remain valid; treasury reads report an
+   * unconfigured state when no contract reader is available.
+   */
+  readContract?<T = unknown>(request: ContractReadRequest): Promise<T>
 }
 
 /**
@@ -93,6 +100,19 @@ export function createBrowserRpcAdapter(rpcUrl: string): RpcAdapter {
     async getBlockNumber(): Promise<bigint> {
       try {
         return await client.getBlockNumber()
+      } catch (err) {
+        throw new RpcUnavailableError(err instanceof Error ? err.message : String(err))
+      }
+    },
+
+    async readContract<T = unknown>(request: ContractReadRequest): Promise<T> {
+      try {
+        return (await client.readContract(request as {
+          address: Address
+          abi: Abi
+          functionName: string
+          args?: readonly unknown[]
+        })) as T
       } catch (err) {
         throw new RpcUnavailableError(err instanceof Error ? err.message : String(err))
       }
