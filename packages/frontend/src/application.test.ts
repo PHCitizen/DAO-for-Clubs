@@ -23,11 +23,13 @@
  */
 
 import { expect, test, vi } from 'vitest'
-import { getAddress } from 'viem'
+import { getAddress, type Hex } from 'viem'
 import { createApplication } from './application'
 import type { ContractReadRequest } from './treasury'
+import type { TestUsdTransactionLog } from './testusd'
 import {
   type WalletAdapter,
+  type ContractWriteRequest,
   type AccountChangedListener,
   type ChainChangedListener,
   WalletRejectedError,
@@ -35,6 +37,7 @@ import {
   WalletConnectError,
   NetworkSwitchRejectedError,
   NetworkSwitchError,
+  TransactionRejectedError,
 } from './wallet'
 import {
   type RpcAdapter,
@@ -76,6 +79,7 @@ function makeAdapter(overrides?: Partial<WalletAdapter>): ControlledAdapter {
       return () => { chainChangeListener = null }
     },
     switchChain: vi.fn().mockResolvedValue(undefined),
+    sendTransaction: vi.fn().mockResolvedValue(`0x${'00'.repeat(32)}`),
   }
 
   return Object.assign({}, defaults, overrides, {
@@ -1085,4 +1089,322 @@ test('treasury reads are unconfigured without a deployment or RPC seam', async (
 
   expect((await app.listTreasuries()).status).toBe('unconfigured')
   expect((await app.readTreasury(TREASURY_A)).status).toBe('unconfigured')
+})
+
+// ---------------------------------------------------------------------------
+// TestUSD minting — issue 02.03
+// ---------------------------------------------------------------------------
+
+const CURRENCY_ADMIN = '0x00000000000000000000000000000000000000f6' as const
+const MINT_RECIPIENT = '0x00000000000000000000000000000000000000a7' as const
+const MINT_HASH = `0x${'ab'.repeat(32)}` as const
+const TRANSFER_TOPIC =
+  '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef' as const
+
+const TEST_USD_DEPLOYMENT = {
+  chainId: 31337,
+  testUsdAddress: SHARED_TEST_USD,
+} as const
+
+type MintOutcome =
+  | 'success'
+  | 'reject'
+  | 'submit-error'
+  | 'revert'
+  | 'confirmation-error'
+  | 'balance-read-error'
+
+interface MintHarnessState {
+  chainId: number
+  connectedAccount: `0x${string}`
+  symbol: string
+  decimals: number
+  currencyAdmin: `0x${string}`
+  balances: Record<string, bigint>
+  outcome: MintOutcome
+  mintedAmount: bigint | null
+  sent: Array<{
+    from: `0x${string}`
+    to: `0x${string}`
+    functionName: string
+    args: readonly unknown[]
+  }>
+}
+
+function transferLog(recipient: string, amount: bigint): TestUsdTransactionLog {
+  return {
+    address: SHARED_TEST_USD,
+    data: `0x${amount.toString(16).padStart(64, '0')}` as Hex,
+    topics: [
+      TRANSFER_TOPIC,
+      `0x${'0'.repeat(64)}`,
+      `0x${recipient.slice(2).toLowerCase().padStart(64, '0')}`,
+    ],
+  }
+}
+
+function makeMintHarness(overrides: Partial<MintHarnessState> = {}) {
+  const state: MintHarnessState = {
+    chainId: 31337,
+    connectedAccount: CURRENCY_ADMIN,
+    symbol: 'TUSD',
+    decimals: 18,
+    currencyAdmin: CURRENCY_ADMIN,
+    balances: {},
+    outcome: 'success',
+    mintedAmount: null,
+    sent: [],
+    ...overrides,
+  }
+
+  const rpc = {
+    getChainId: vi.fn(async () => state.chainId),
+    getBlockNumber: vi.fn(async () => 1n),
+    readContract: vi.fn(async (request: ContractReadRequest): Promise<unknown> => {
+      switch (request.functionName) {
+        case 'symbol':
+          return state.symbol
+        case 'decimals':
+          return state.decimals
+        case 'currencyAdmin':
+          return state.currencyAdmin
+        case 'balanceOf': {
+          if (state.outcome === 'balance-read-error') {
+            throw new Error('balance read unavailable')
+          }
+          return state.balances[key(request.args?.[0] as string)] ?? 0n
+        }
+        default:
+          throw new Error(`Unexpected TestUSD read: ${request.functionName}`)
+      }
+    }),
+    waitForTransactionReceipt: vi.fn(async (hash: Hex) => {
+      if (state.outcome === 'confirmation-error') {
+        throw new Error('receipt unavailable')
+      }
+      const last = state.sent[state.sent.length - 1]
+      if (!last) throw new Error(`Unknown transaction ${hash}`)
+
+      const recipient = getAddress(last.args[0] as string)
+      const requested = last.args[1] as bigint
+      if (state.outcome === 'revert') {
+        return { status: 'reverted', blockNumber: 123n, logs: [] }
+      }
+
+      const minted = state.mintedAmount ?? requested
+      state.balances[key(recipient)] = (state.balances[key(recipient)] ?? 0n) + minted
+      return {
+        status: 'success',
+        blockNumber: 123n,
+        logs: [transferLog(recipient, minted)],
+      }
+    }),
+  } as unknown as RpcAdapter
+
+  const adapter = makeAdapter({
+    connect: vi.fn().mockResolvedValue(state.connectedAccount),
+    getChainId: vi.fn().mockResolvedValue(state.chainId),
+    sendTransaction: vi.fn(async (request: ContractWriteRequest) => {
+      if (state.outcome === 'reject') throw new TransactionRejectedError()
+      if (state.outcome === 'submit-error') throw new Error('nonce too low')
+      state.sent.push({
+        from: request.from,
+        to: request.to,
+        functionName: request.functionName,
+        args: request.args ?? [],
+      })
+      return MINT_HASH
+    }),
+  })
+
+  return { state, rpc, adapter }
+}
+
+test('reads shared TestUSD metadata without a wallet', async () => {
+  const { rpc } = makeMintHarness()
+  const app = createApplication(undefined, rpc, TEST_USD_DEPLOYMENT)
+
+  const result = await app.readTestUsd()
+
+  expect(result.status).toBe('success')
+  if (result.status === 'success') {
+    expect(result.chainId).toBe(31337)
+    expect(result.testUsd.address).toBe(getAddress(SHARED_TEST_USD))
+    expect(result.testUsd.symbol).toBe('TUSD')
+    expect(result.testUsd.decimals).toBe(18)
+    expect(result.testUsd.currencyAdmin).toBe(getAddress(CURRENCY_ADMIN))
+  }
+  expect(app.readWalletAccount()).toEqual({ status: 'disconnected' })
+})
+
+test('rejects invalid mint amounts using the token decimals before sending', async () => {
+  const { rpc, adapter } = makeMintHarness()
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  for (const amount of ['0', '0.0000000000000000001', '1.0000000000000000001', '1e3', 'abc', '']) {
+    const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount })
+    expect(result.status).toBe('invalid-amount')
+  }
+
+  expect(adapter.sendTransaction).not.toHaveBeenCalled()
+})
+
+test('rejects an invalid mint recipient before sending', async () => {
+  const { rpc, adapter } = makeMintHarness()
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: 'not-an-address', amount: '1' })
+
+  expect(result).toEqual({
+    status: 'invalid-recipient',
+    message: 'Enter a valid recipient address.',
+  })
+  expect(adapter.sendTransaction).not.toHaveBeenCalled()
+})
+
+test('rejects a treasury administrator who is not the TestUSD currency administrator', async () => {
+  const { rpc, adapter } = makeMintHarness({ connectedAccount: ADMIN_A })
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1' })
+
+  expect(result.status).toBe('unauthorized')
+  if (result.status === 'unauthorized') {
+    expect(result.account).toBe(getAddress(ADMIN_A))
+    expect(result.currencyAdmin).toBe(getAddress(CURRENCY_ADMIN))
+  }
+  expect(adapter.sendTransaction).not.toHaveBeenCalled()
+})
+
+test('an authorized mint reports the decoded amount and updated recipient balance', async () => {
+  const { state, rpc, adapter } = makeMintHarness({
+    balances: { [key(MINT_RECIPIENT)]: 2_000_000_000_000_000_000n },
+  })
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1.5' })
+
+  expect(result.status).toBe('success')
+  if (result.status === 'success') {
+    expect(result.chainId).toBe(31337)
+    expect(result.hash).toBe(MINT_HASH)
+    expect(result.blockNumber).toBe(123n)
+    expect(result.recipient).toBe(getAddress(MINT_RECIPIENT))
+    expect(result.amount).toBe(1_500_000_000_000_000_000n)
+    expect(result.formattedAmount).toBe('1.5')
+    expect(result.recipientBalance).toBe(3_500_000_000_000_000_000n)
+    expect(result.formattedRecipientBalance).toBe('3.5')
+    expect(result.symbol).toBe('TUSD')
+    expect(result.decimals).toBe(18)
+    expect(result.currencyAdmin).toBe(getAddress(CURRENCY_ADMIN))
+  }
+
+  expect(adapter.sendTransaction).toHaveBeenCalledOnce()
+  expect(adapter.sendTransaction).toHaveBeenCalledWith({
+    from: getAddress(CURRENCY_ADMIN),
+    to: getAddress(SHARED_TEST_USD),
+    abi: expect.any(Array),
+    functionName: 'mint',
+    args: [getAddress(MINT_RECIPIENT), 1_500_000_000_000_000_000n],
+  })
+  expect(state.sent).toHaveLength(1)
+})
+
+test('reports the actual minted amount decoded from the confirmed event', async () => {
+  const { rpc, adapter } = makeMintHarness({
+    mintedAmount: 1_000_000_000_000_000_000n,
+  })
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1.5' })
+
+  expect(result.status).toBe('success')
+  if (result.status === 'success') {
+    expect(result.amount).toBe(1_000_000_000_000_000_000n)
+    expect(result.formattedAmount).toBe('1')
+    expect(result.formattedRecipientBalance).toBe('1')
+  }
+})
+
+test('a wallet-rejected mint is not reported as success', async () => {
+  const { state, rpc, adapter } = makeMintHarness({ outcome: 'reject' })
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1' })
+
+  expect(result.status).toBe('wallet-rejected')
+  expect(state.sent).toHaveLength(0)
+})
+
+test('a submission failure is distinct from confirmed minting', async () => {
+  const { rpc, adapter } = makeMintHarness({ outcome: 'submit-error' })
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1' })
+
+  expect(result.status).toBe('transaction-failed')
+  if (result.status === 'transaction-failed') {
+    expect(result.stage).toBe('submission')
+    expect(result.hash).toBeUndefined()
+    expect(result.error).toContain('nonce too low')
+  }
+})
+
+test('a reverted mint is reported as failed with the transaction hash', async () => {
+  const { rpc, adapter } = makeMintHarness({ outcome: 'revert' })
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1' })
+
+  expect(result.status).toBe('transaction-failed')
+  if (result.status === 'transaction-failed') {
+    expect(result.stage).toBe('reverted')
+    expect(result.hash).toBe(MINT_HASH)
+    expect(result.message).toContain('No currency was minted')
+  }
+})
+
+test('an unconfirmed mint is distinguished from a confirmed success', async () => {
+  const { rpc, adapter } = makeMintHarness({ outcome: 'confirmation-error' })
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1' })
+
+  expect(result.status).toBe('transaction-failed')
+  if (result.status === 'transaction-failed') {
+    expect(result.stage).toBe('confirmation')
+    expect(result.hash).toBe(MINT_HASH)
+  }
+})
+
+test('a confirmed mint whose balance cannot be read is not reported as success', async () => {
+  const { rpc, adapter } = makeMintHarness({ outcome: 'balance-read-error' })
+  const app = createApplication(adapter, rpc, TEST_USD_DEPLOYMENT)
+  await app.connect()
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1' })
+
+  expect(result.status).toBe('transaction-failed')
+  if (result.status === 'transaction-failed') {
+    expect(result.stage).toBe('confirmation')
+    expect(result.message).toContain('balance')
+  }
+})
+
+test('minting requires a connected wallet', async () => {
+  const { rpc } = makeMintHarness()
+  const app = createApplication(undefined, rpc, TEST_USD_DEPLOYMENT)
+
+  const result = await app.mintTestUsd({ recipient: MINT_RECIPIENT, amount: '1' })
+
+  expect(result.status).toBe('wallet-unavailable')
 })

@@ -1,6 +1,7 @@
-import { createPublicClient, http, type Abi } from 'viem'
+import { createPublicClient, http, type Abi, type Hex } from 'viem'
 import type { Address } from './wallet'
 import type { ContractReadRequest } from './treasury'
+import type { TestUsdTransactionReceipt } from './testusd'
 
 // ---------------------------------------------------------------------------
 // Domain errors
@@ -78,6 +79,11 @@ export interface RpcAdapter {
    * unconfigured state when no contract reader is available.
    */
   readContract?<T = unknown>(request: ContractReadRequest): Promise<T>
+  /**
+   * Waits for a submitted transaction to be included and returns its confirmed
+   * status, block, and logs. Optional for read-only transport stubs.
+   */
+  waitForTransactionReceipt?(hash: Hex): Promise<TestUsdTransactionReceipt>
 }
 
 /**
@@ -113,6 +119,23 @@ export function createBrowserRpcAdapter(rpcUrl: string): RpcAdapter {
           functionName: string
           args?: readonly unknown[]
         })) as T
+      } catch (err) {
+        throw new RpcUnavailableError(err instanceof Error ? err.message : String(err))
+      }
+    },
+
+    async waitForTransactionReceipt(hash: Hex): Promise<TestUsdTransactionReceipt> {
+      try {
+        const receipt = await client.waitForTransactionReceipt({ hash })
+        return {
+          status: receipt.status,
+          blockNumber: receipt.blockNumber,
+          logs: receipt.logs.map((log) => ({
+            address: log.address,
+            data: log.data,
+            topics: log.topics,
+          })),
+        }
       } catch (err) {
         throw new RpcUnavailableError(err instanceof Error ? err.message : String(err))
       }
