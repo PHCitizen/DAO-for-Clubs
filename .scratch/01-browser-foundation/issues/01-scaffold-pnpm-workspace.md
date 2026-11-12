@@ -4,7 +4,7 @@
 **Spec:** [Feature 01: Browser application foundation](../spec.md)
 **What to build:** A contributor can install, run, build, and verify the initial browser application and local contract tooling through a reproducible pnpm workspace.
 **Blocked by:** None (can start immediately).
-**Status:** ready-for-agent
+**Status:** claimed
 
 ## Acceptance criteria
 

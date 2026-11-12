@@ -1,1 +1,13 @@
 .pi/*
+node_modules/
+dist/
+.tanstack/
+coverage/
+packages/contracts/artifacts/
+packages/contracts/cache/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+node_modules
+packages/frontend/dist/*
