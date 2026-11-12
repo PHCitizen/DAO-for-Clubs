@@ -41,7 +41,7 @@ pnpm check                          # tests, builds, TypeScript checks
 pnpm --filter @dao/frontend test
 pnpm --filter @dao/frontend typecheck
 pnpm --filter @dao/frontend build
-pnpm --filter @dao/contracts test    # real EVM transfer + public handoff test
+pnpm --filter @dao/contracts test    # real EVM transfer test
 pnpm --filter @dao/contracts build
 pnpm --filter @dao/contracts typecheck
 ```

@@ -13,7 +13,7 @@ Contracts/tooling owns:
 - Deployment and maintenance code under `packages/contracts/scripts/deploy/` and
   `scripts/maintenance/`.
 - The non-secret source manifest `packages/contracts/deployments/public.json`.
-- The exporter `packages/contracts/scripts/export-public-artifacts.mjs`.
+- The exporter `packages/contracts/scripts/export-public-artifacts.ts` (run with `tsx`).
 
 The initial manifest has local chain ID 31337, null DAO and TestUSD addresses,
 and no ABI entries. Null means **not deployed**; never invent an address or

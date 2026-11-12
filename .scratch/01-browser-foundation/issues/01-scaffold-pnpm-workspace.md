@@ -53,3 +53,8 @@ Verification:
 - Browser system dependencies were repaired during the session; browser smoke then
   passed. These optional tools are not required by `pnpm check`.
 - Issue 01.02 is now unblocked; issues 01.02 and 01.03 remain out of this session's scope.
+- Follow-up at user request: converted the exporter to TypeScript run with `tsx`,
+  split it into named functions, and removed its script-specific test. Contracts
+  tooling conventions are recorded in `AGENTS.md`. Script TypeScript checks and a
+  direct export run pass; generated public output is unchanged. Application and
+  real-EVM behavioral tests remain in place.
