@@ -1,5 +1,5 @@
-import { createPublicClient, http } from 'viem'
-import type { Address } from './wallet'
+import { createPublicClient, http, type PublicClient } from 'viem'
+import type { Address } from './wallet.js'
 
 // ---------------------------------------------------------------------------
 // Domain errors
@@ -69,6 +69,7 @@ export class RpcUnavailableError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface RpcAdapter {
+  contractClient?: PublicClient
   getChainId(): Promise<number>
   getBlockNumber(): Promise<bigint>
 }
@@ -82,6 +83,7 @@ export function createBrowserRpcAdapter(rpcUrl: string): RpcAdapter {
   })
 
   return {
+    contractClient: client,
     async getChainId(): Promise<number> {
       try {
         return await client.getChainId()
