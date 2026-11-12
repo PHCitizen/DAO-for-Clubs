@@ -1,29 +1,56 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
-import { createApplication, type Application, type WalletState } from '../application'
+import {
+  createApplication,
+  type Application,
+  type WalletState,
+  type NetworkState,
+  type PublicDeploymentStatus,
+} from '../application'
 import { createBrowserWalletAdapter } from '../wallet'
 
 export const Route = createFileRoute('/')({ component: Home })
 
 // Application instance is created once per page load, outside React, so that
-// wallet state survives re-renders and hot-module replacement doesn't create
+// wallet and network state survive re-renders and hot-module replacement doesn't create
 // duplicate listeners.
 const app: Application = createApplication(createBrowserWalletAdapter())
 
 function useWalletState(): WalletState {
   const [state, setState] = useState<WalletState>(() => app.readWalletAccount())
   useEffect(() => {
-    // Sync in case state changed between render and effect.
     setState(app.readWalletAccount())
     return app.onWalletStateChanged(setState)
   }, [])
   return state
 }
 
+function useNetworkState(): NetworkState {
+  const [state, setState] = useState<NetworkState>(() => app.readNetworkState())
+  useEffect(() => {
+    setState(app.readNetworkState())
+    return app.onNetworkStateChanged(setState)
+  }, [])
+  return state
+}
+
 function Home() {
   const home = app.readHome()
+  const deployment = app.readDeployment()
   const walletState = useWalletState()
+  const networkState = useNetworkState()
   const connectingRef = useRef(false)
+  const [rpcStatus, setRpcStatus] = useState<PublicDeploymentStatus | null>(null)
+
+  useEffect(() => {
+    let active = true
+    app.queryPublicDeployment().then((res) => {
+      if (active) setRpcStatus(res)
+    })
+    return () => {
+      active = false
+    }
+  }, [])
 
   async function handleConnect() {
     if (connectingRef.current) return
@@ -39,6 +66,10 @@ function Home() {
     await app.disconnect()
   }
 
+  async function handleSwitchNetwork() {
+    await app.switchNetwork()
+  }
+
   return (
     <main className="mx-auto max-w-3xl px-6 py-20">
       <p className="mb-4 text-sm font-semibold uppercase tracking-widest text-emerald-700">
@@ -47,23 +78,83 @@ function Home() {
       <h1 className="text-4xl font-bold tracking-tight">{home.title}</h1>
       <p className="mt-6 text-lg text-slate-600">{home.description}</p>
 
-      {/* Workspace status */}
-      <section aria-labelledby="status-title" className="mt-10 rounded-xl border border-slate-200 bg-white p-6">
-        <h2 id="status-title" className="text-lg font-semibold">Workspace ready</h2>
-        <p className="mt-2 text-slate-600">
-          {home.deploymentMessage}
-        </p>
+      {/* Deployment & Network Context */}
+      <section
+        aria-labelledby="deployment-title"
+        className="mt-10 rounded-xl border border-slate-200 bg-white p-6"
+      >
+        <h2 id="deployment-title" className="text-lg font-semibold">
+          Deployment context
+        </h2>
+        <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Configured network
+            </p>
+            <p className="mt-1 font-medium text-slate-900">
+              {deployment.chainName}{' '}
+              <span className="text-sm font-normal text-slate-500">
+                (Chain ID {deployment.chainId})
+              </span>
+            </p>
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Canonical DAO
+            </p>
+            <p className="mt-1 font-mono text-sm text-slate-900">
+              {deployment.daoAddress ?? (
+                <span className="font-sans text-slate-500 italic">Not yet deployed</span>
+              )}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              TestUSD
+            </p>
+            <p className="mt-1 font-mono text-sm text-slate-900">
+              {deployment.testUsdAddress ?? (
+                <span className="font-sans text-slate-500 italic">Not yet deployed</span>
+              )}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Public RPC status
+            </p>
+            <p className="mt-1 text-sm text-slate-700">
+              {!rpcStatus ? (
+                'Checking RPC…'
+              ) : rpcStatus.status === 'available' ? (
+                <span className="text-emerald-700 font-medium">
+                  Reachable (Block #{rpcStatus.blockNumber.toString()})
+                </span>
+              ) : rpcStatus.status === 'rpc-unavailable' ? (
+                <span className="text-amber-700">Unavailable ({rpcStatus.message})</span>
+              ) : (
+                <span className="text-slate-500">Unconfigured</span>
+              )}
+            </p>
+          </div>
+        </div>
       </section>
 
-      {/* Wallet connection */}
-      <section aria-labelledby="wallet-title" className="mt-6 rounded-xl border border-slate-200 bg-white p-6">
-        <h2 id="wallet-title" className="text-lg font-semibold">Wallet</h2>
+      {/* Wallet & Network Management */}
+      <section
+        aria-labelledby="wallet-title"
+        className="mt-6 rounded-xl border border-slate-200 bg-white p-6"
+      >
+        <h2 id="wallet-title" className="text-lg font-semibold">
+          Wallet &amp; Network
+        </h2>
         <div className="mt-4">
           <WalletPanel
             state={walletState}
+            networkState={networkState}
             isAvailable={app.isWalletAvailable()}
             onConnect={handleConnect}
             onDisconnect={handleDisconnect}
+            onSwitchNetwork={handleSwitchNetwork}
           />
         </div>
       </section>
@@ -77,12 +168,21 @@ function Home() {
 
 interface WalletPanelProps {
   state: WalletState
+  networkState: NetworkState
   isAvailable: boolean
   onConnect: () => void
   onDisconnect: () => void
+  onSwitchNetwork: () => void
 }
 
-function WalletPanel({ state, isAvailable, onConnect, onDisconnect }: WalletPanelProps) {
+function WalletPanel({
+  state,
+  networkState,
+  isAvailable,
+  onConnect,
+  onDisconnect,
+  onSwitchNetwork,
+}: WalletPanelProps) {
   if (!isAvailable) {
     return (
       <div className="text-slate-600">
@@ -125,18 +225,81 @@ function WalletPanel({ state, isAvailable, onConnect, onDisconnect }: WalletPane
 
   if (state.status === 'connected') {
     return (
-      <div className="flex items-center gap-4">
-        <div>
-          <p className="text-sm text-slate-500">Connected account</p>
-          <p className="font-mono text-sm text-slate-900 break-all">{state.account}</p>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm text-slate-500">Connected account</p>
+            <p className="font-mono text-sm text-slate-900 break-all">{state.account}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onDisconnect}
+            className="shrink-0 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-700"
+          >
+            Disconnect
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={onDisconnect}
-          className="shrink-0 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-700"
-        >
-          Disconnect
-        </button>
+
+        {/* Network status within wallet */}
+        {networkState.status === 'matched' && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
+            Connected to supported network:{' '}
+            <span className="font-semibold">{networkState.configuredChainName}</span> (Chain ID{' '}
+            {networkState.walletChainId})
+          </div>
+        )}
+
+        {networkState.status === 'mismatched' && (
+          <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+            <p className="text-sm font-semibold text-amber-800">Wrong network</p>
+            <p className="mt-1 text-sm text-amber-700">
+              Your wallet is connected to{' '}
+              <span className="font-semibold">
+                {networkState.walletChainName ?? `Chain ID ${networkState.walletChainId}`}
+              </span>
+              , but this deployment is on{' '}
+              <span className="font-semibold">{networkState.configuredChainName}</span> (Chain ID{' '}
+              {networkState.configuredChainId}).
+            </p>
+            {networkState.canSwitch && (
+              <button
+                type="button"
+                onClick={onSwitchNetwork}
+                className="mt-3 rounded-lg bg-amber-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700"
+              >
+                Switch to {networkState.configuredChainName}
+              </button>
+            )}
+          </div>
+        )}
+
+        {networkState.status === 'switching' && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+            <span aria-live="polite">
+              Switching network to Chain ID {networkState.targetChainId} — check your wallet…
+            </span>
+          </div>
+        )}
+
+        {networkState.status === 'switch-error' && (
+          <div role="alert" className="space-y-3 rounded-lg border border-red-200 bg-red-50 p-4">
+            <div>
+              <p className="text-sm font-semibold text-red-800">
+                {networkState.error.kind === 'network-switch-rejected'
+                  ? 'Network switch rejected'
+                  : 'Network switch error'}
+              </p>
+              <p className="mt-1 text-sm text-red-700">{networkState.error.message}</p>
+            </div>
+            <button
+              type="button"
+              onClick={onSwitchNetwork}
+              className="rounded-lg bg-red-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-red-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+            >
+              Try again
+            </button>
+          </div>
+        )}
       </div>
     )
   }

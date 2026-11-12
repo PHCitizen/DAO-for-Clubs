@@ -3,21 +3,138 @@ import {
   type WalletAdapter,
   type Address,
   type AccountChangedListener,
+  type ChainChangedListener,
+  type DomainWalletError,
   WalletUnavailableError,
+  NetworkSwitchRejectedError,
+  NetworkSwitchError,
   normalizeWalletError,
 } from './wallet'
+import {
+  type DeploymentConfig,
+  type DeploymentContext,
+  getSupportedChain,
+  resolveDeploymentContext,
+} from './networks'
+import {
+  type RpcAdapter,
+  createBrowserRpcAdapter,
+  WalletNotConnectedError,
+  DeploymentNotDeployedError,
+  DeploymentNotConfiguredError,
+  ChainMismatchError,
+  StaleActionConfigurationError,
+} from './rpc'
 
 // ---------------------------------------------------------------------------
-// Wallet connection state
+// Wallet connection and network state
 // ---------------------------------------------------------------------------
 
 export type WalletState =
   | { status: 'disconnected' }
   | { status: 'connecting' }
   | { status: 'connected'; account: Address }
-  | { status: 'error'; error: WalletUnavailableError | { kind: 'wallet-rejected' | 'wallet-connect-error'; message: string } }
+  | { status: 'error'; error: DomainWalletError | { kind: string; message: string } }
 
 export type WalletStateListener = (state: WalletState) => void
+
+export type NetworkState =
+  | {
+      status: 'disconnected'
+      configuredChainId: number
+      configuredChainName: string
+      isSupported: boolean
+    }
+  | {
+      status: 'matched'
+      configuredChainId: number
+      configuredChainName: string
+      walletChainId: number
+    }
+  | {
+      status: 'mismatched'
+      configuredChainId: number
+      configuredChainName: string
+      walletChainId: number
+      walletChainName?: string
+      canSwitch: boolean
+    }
+  | {
+      status: 'switching'
+      configuredChainId: number
+      targetChainId: number
+    }
+  | {
+      status: 'switch-error'
+      configuredChainId: number
+      walletChainId: number
+      error: NetworkSwitchRejectedError | NetworkSwitchError
+    }
+
+export type NetworkStateListener = (state: NetworkState) => void
+
+// ---------------------------------------------------------------------------
+// Action preparation context and interfaces
+// ---------------------------------------------------------------------------
+
+export interface ActionContext {
+  account: Address
+  chainId: number
+  targetAddress: Address
+}
+
+export interface PrepareActionOptions {
+  /** Target contract; defaults to 'dao' */
+  target?: 'dao' | 'testUsd' | Address
+  /** Optional verification hook executed during preparation to simulate async work */
+  verify?: (context: ActionContext) => Promise<void>
+}
+
+export interface PreparedAction {
+  context: ActionContext
+  /** Asserts that wallet connection and chain still match the prepared snapshot */
+  assertValid(): void
+  /** Executes action only if wallet connection and chain still match */
+  execute<T>(actionFn: (context: ActionContext) => Promise<T>): Promise<T>
+}
+
+// ---------------------------------------------------------------------------
+// Public read status and results
+// ---------------------------------------------------------------------------
+
+export type PublicDeploymentStatus =
+  | {
+      status: 'available'
+      chainId: number
+      blockNumber: bigint
+      daoAddress: Address | null
+      isDeployed: boolean
+    }
+  | {
+      status: 'rpc-unavailable'
+      message: string
+      error: string
+    }
+  | {
+      status: 'unconfigured'
+      message: string
+    }
+
+export type PublicReadResult<T> =
+  | {
+      status: 'success'
+      data: T
+      chainId: number
+    }
+  | {
+      status: 'rpc-unavailable'
+      message: string
+      error: string
+    }
+  | {
+      status: 'unconfigured'
+      message: string
+    }
 
 // ---------------------------------------------------------------------------
 // Application factory
@@ -29,15 +146,70 @@ export type WalletStateListener = (state: WalletState) => void
  * or the production browser adapter in the app entry point. When no adapter
  * is supplied the application runs read-only (no wallet actions available).
  */
-export function createApplication(adapter?: WalletAdapter) {
+export function createApplication(
+  adapter?: WalletAdapter,
+  injectedRpcAdapter?: RpcAdapter,
+  deploymentConfig?: Partial<DeploymentConfig>
+) {
+  const deploymentContext: DeploymentContext = resolveDeploymentContext(deploymentConfig)
+
+  let rpc = injectedRpcAdapter
+  if (!rpc && deploymentContext.rpcUrl) {
+    try {
+      rpc = createBrowserRpcAdapter(deploymentContext.rpcUrl)
+    } catch {
+      // Ignored if invalid URL
+    }
+  }
+
   // Mutable wallet state kept inside the closure; listeners notify subscribers.
   let walletState: WalletState = { status: 'disconnected' }
   const listeners = new Set<WalletStateListener>()
   let unsubscribeAccountChanged: (() => void) | null = null
 
+  // Mutable network state
+  let walletChainId: number | null = null
+  const networkListeners = new Set<NetworkStateListener>()
+  let unsubscribeChainChanged: (() => void) | null = null
+
+  function deriveNetworkState(): NetworkState {
+    if (walletState.status !== 'connected' || walletChainId === null) {
+      return {
+        status: 'disconnected',
+        configuredChainId: deploymentContext.chainId,
+        configuredChainName: deploymentContext.chainName,
+        isSupported: deploymentContext.isSupported,
+      }
+    }
+    if (walletChainId === deploymentContext.chainId) {
+      return {
+        status: 'matched',
+        configuredChainId: deploymentContext.chainId,
+        configuredChainName: deploymentContext.chainName,
+        walletChainId,
+      }
+    }
+    const chain = getSupportedChain(walletChainId)
+    return {
+      status: 'mismatched',
+      configuredChainId: deploymentContext.chainId,
+      configuredChainName: deploymentContext.chainName,
+      walletChainId,
+      walletChainName: chain?.name ?? `Unsupported Chain (${walletChainId})`,
+      canSwitch: true,
+    }
+  }
+
+  let networkState: NetworkState = deriveNetworkState()
+
   function emit(next: WalletState) {
     walletState = next
     for (const l of listeners) l(next)
+  }
+
+  function emitNetwork(next: NetworkState) {
+    networkState = next
+    for (const l of networkListeners) l(next)
   }
 
   // Wire up the adapter's account-change events once.
@@ -46,7 +218,9 @@ export function createApplication(adapter?: WalletAdapter) {
     const handler: AccountChangedListener = ({ account }) => {
       if (account === null) {
         // Wallet switched to no accounts — treat as disconnect.
+        walletChainId = null
         emit({ status: 'disconnected' })
+        emitNetwork(deriveNetworkState())
       } else {
         // Account switched; update without re-requesting.
         emit({ status: 'connected', account })
@@ -62,6 +236,22 @@ export function createApplication(adapter?: WalletAdapter) {
     }
   }
 
+  function attachChainListener() {
+    if (!adapter || unsubscribeChainChanged) return
+    const handler: ChainChangedListener = ({ chainId }) => {
+      walletChainId = chainId
+      emitNetwork(deriveNetworkState())
+    }
+    unsubscribeChainChanged = adapter.onChainChanged(handler)
+  }
+
+  function detachChainListener() {
+    if (unsubscribeChainChanged) {
+      unsubscribeChainChanged()
+      unsubscribeChainChanged = null
+    }
+  }
+
   return {
     // -----------------------------------------------------------------------
     // Read actions
@@ -72,9 +262,80 @@ export function createApplication(adapter?: WalletAdapter) {
         title: 'DAO for Clubs',
         description: 'Explore your organization. No wallet required to get started.',
         deploymentMessage:
-          publicArtifacts.daoAddress === null
+          deploymentContext.daoAddress === null
             ? 'No DAO has been deployed by this scaffold.'
             : 'Public deployment artifacts are available.',
+      }
+    },
+
+    /** Returns the configured deployment context and chain identity. */
+    readDeployment(): DeploymentContext {
+      return deploymentContext
+    },
+
+    /** Returns the current network state relative to the configured deployment. */
+    readNetworkState(): NetworkState {
+      return networkState
+    },
+
+    /**
+     * Queries public deployment information via RPC without requiring a wallet.
+     * Distinguishes available RPC, unconfigured deployment, and RPC errors.
+     */
+    async queryPublicDeployment(): Promise<PublicDeploymentStatus> {
+      if (!rpc) {
+        return {
+          status: 'unconfigured',
+          message: 'No RPC endpoint configured for deployment.',
+        }
+      }
+      try {
+        const [chainId, blockNumber] = await Promise.all([
+          rpc.getChainId(),
+          rpc.getBlockNumber(),
+        ])
+        return {
+          status: 'available',
+          chainId,
+          blockNumber,
+          daoAddress: deploymentContext.daoAddress,
+          isDeployed: deploymentContext.isDeployed,
+        }
+      } catch (err) {
+        return {
+          status: 'rpc-unavailable',
+          message: 'RPC endpoint is unavailable.',
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    },
+
+    /**
+     * Executes a public query function through the RPC adapter without requiring a wallet.
+     * Distinguishes an empty successful result from an RPC failure.
+     */
+    async queryPublicData<T>(
+      queryFn: (rpc: RpcAdapter) => Promise<T>
+    ): Promise<PublicReadResult<T>> {
+      if (!rpc) {
+        return {
+          status: 'unconfigured',
+          message: 'No RPC endpoint configured for deployment.',
+        }
+      }
+      try {
+        const data = await queryFn(rpc)
+        return {
+          status: 'success',
+          data,
+          chainId: deploymentContext.chainId,
+        }
+      } catch (err) {
+        return {
+          status: 'rpc-unavailable',
+          message: 'RPC endpoint is unavailable.',
+          error: err instanceof Error ? err.message : String(err),
+        }
       }
     },
 
@@ -104,12 +365,16 @@ export function createApplication(adapter?: WalletAdapter) {
       emit({ status: 'connecting' })
       try {
         const account = await adapter.connect()
+        walletChainId = (await adapter.getChainId()) ?? null
         emit({ status: 'connected', account })
+        emitNetwork(deriveNetworkState())
         attachAccountListener()
+        attachChainListener()
       } catch (err) {
         const domainError = normalizeWalletError(err)
         emit({ status: 'error', error: domainError })
         detachAccountListener()
+        detachChainListener()
       }
     },
 
@@ -120,12 +385,133 @@ export function createApplication(adapter?: WalletAdapter) {
     async disconnect(): Promise<void> {
       if (!adapter) return
       detachAccountListener()
+      detachChainListener()
+      walletChainId = null
       try {
         await adapter.disconnect()
       } catch {
         // Best-effort; session is cleared regardless.
       }
       emit({ status: 'disconnected' })
+      emitNetwork(deriveNetworkState())
+    },
+
+    /**
+     * Request the wallet to switch to the supported deployment network (or targetChainId).
+     * Never throws; failure and rejection become state with retry feedback.
+     */
+    async switchNetwork(targetChainId?: number): Promise<void> {
+      if (!adapter) return
+      const target = targetChainId ?? deploymentContext.chainId
+      emitNetwork({
+        status: 'switching',
+        configuredChainId: deploymentContext.chainId,
+        targetChainId: target,
+      })
+      try {
+        await adapter.switchChain(target)
+        const currentChainId = await adapter.getChainId()
+        walletChainId = currentChainId !== null ? currentChainId : target
+        emitNetwork(deriveNetworkState())
+      } catch (err: unknown) {
+        const domainError = normalizeWalletError(err)
+        if (
+          domainError instanceof NetworkSwitchRejectedError ||
+          domainError instanceof NetworkSwitchError
+        ) {
+          emitNetwork({
+            status: 'switch-error',
+            configuredChainId: deploymentContext.chainId,
+            walletChainId: walletChainId ?? 0,
+            error: domainError,
+          })
+        } else {
+          emitNetwork({
+            status: 'switch-error',
+            configuredChainId: deploymentContext.chainId,
+            walletChainId: walletChainId ?? 0,
+            error: new NetworkSwitchError(
+              domainError instanceof Error ? domainError.message : String(domainError)
+            ),
+          })
+        }
+      }
+    },
+
+    /**
+     * Prepares a deployment-specific action against the configured deployment.
+     * Validates that wallet is connected, DAO is deployed, and wallet network matches.
+     * Prevents stale chain/account assumptions from proceeding.
+     */
+    async prepareDeploymentAction(options?: PrepareActionOptions): Promise<PreparedAction> {
+      if (walletState.status !== 'connected') {
+        throw new WalletNotConnectedError()
+      }
+      const initialAccount = walletState.account
+
+      if (!deploymentContext.chainId) {
+        throw new DeploymentNotConfiguredError()
+      }
+
+      let targetAddress: Address | null = null
+      if (!options?.target || options.target === 'dao') {
+        targetAddress = deploymentContext.daoAddress
+      } else if (options.target === 'testUsd') {
+        targetAddress = deploymentContext.testUsdAddress
+      } else {
+        targetAddress = options.target
+      }
+
+      if (targetAddress === null) {
+        throw new DeploymentNotDeployedError(deploymentContext.chainId)
+      }
+
+      const initialChainId = walletChainId
+      if (initialChainId !== deploymentContext.chainId) {
+        throw new ChainMismatchError(
+          deploymentContext.chainId,
+          initialChainId ?? 0
+        )
+      }
+
+      const context: ActionContext = {
+        account: initialAccount,
+        chainId: initialChainId,
+        targetAddress,
+      }
+
+      // Run async verification if requested
+      if (options?.verify) {
+        await options.verify(context)
+      }
+
+      // Check for staleness post-verification
+      if (
+        walletState.status !== 'connected' ||
+        walletState.account !== initialAccount ||
+        walletChainId !== initialChainId
+      ) {
+        throw new StaleActionConfigurationError()
+      }
+
+      function assertValid() {
+        if (
+          walletState.status !== 'connected' ||
+          walletState.account !== initialAccount ||
+          walletChainId !== initialChainId
+        ) {
+          throw new StaleActionConfigurationError()
+        }
+      }
+
+      return {
+        context,
+        assertValid,
+        async execute<T>(actionFn: (ctx: ActionContext) => Promise<T>): Promise<T> {
+          assertValid()
+          return await actionFn(context)
+        },
+      }
     },
 
     // -----------------------------------------------------------------------
@@ -141,12 +527,23 @@ export function createApplication(adapter?: WalletAdapter) {
       return () => listeners.delete(listener)
     },
 
+    /**
+     * Subscribe to network state changes. Returns an unsubscribe function.
+     * Call immediately after subscribe to read current state via readNetworkState().
+     */
+    onNetworkStateChanged(listener: NetworkStateListener): () => void {
+      networkListeners.add(listener)
+      return () => networkListeners.delete(listener)
+    },
+
     // -----------------------------------------------------------------------
     // Teardown (for tests and hot-module replacement)
     // -----------------------------------------------------------------------
     destroy() {
       detachAccountListener()
+      detachChainListener()
       listeners.clear()
+      networkListeners.clear()
     },
   }
 }
