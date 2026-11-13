@@ -229,14 +229,19 @@ contract DAO {
         return _recordPassingIfQualified(proposalId);
     }
 
+    /// @dev True while a proposal is neither already passed nor past its deadline.
+    function _votingOpen(uint256 proposalId) internal view returns (bool) {
+        return !_voting[proposalId].passingRecorded && block.timestamp < _proposals[proposalId].votingDeadline;
+    }
+
     /// @dev Shared open-vote guard for later ballot and passing-check actions.
     function _requireOpenVote(uint256 proposalId) internal view returns (Proposal storage proposal) {
         if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
         proposal = _proposals[proposalId];
-        if (_voting[proposalId].passingRecorded || block.timestamp >= proposal.votingDeadline) revert VotingClosed();
+        if (!_votingOpen(proposalId)) revert VotingClosed();
     }
 
-    /// @dev Call only after the open-vote guard. Passing never touches funds.
+    /// @dev Call only once the vote is confirmed open (via `_requireOpenVote` or `_votingOpen`). Passing never touches funds.
     function _recordPassingIfQualified(uint256 proposalId) internal returns (bool) {
         VotingResult storage result = _voting[proposalId];
         if (!result.passingRecorded && result.yesVotes >= _yesThreshold(proposalId)) {
@@ -267,7 +272,7 @@ contract DAO {
         Proposal storage proposal = _proposals[proposalId];
         if (msg.sender != proposal.creator) revert NotProposalCreator();
         VotingResult storage result = _voting[proposalId];
-        if (!result.passingRecorded && block.timestamp < proposal.votingDeadline) {
+        if (_votingOpen(proposalId)) {
             _recordPassingIfQualified(proposalId);
         }
         if (!result.passingRecorded) revert ProposalNotPassed();

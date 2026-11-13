@@ -109,6 +109,24 @@ test('a release request can record passing itself while voting is open', async (
       assert.equal(await released(id), false)
     })
 
+    await t.test('a burn that would qualify yes votes cannot retroactively pass a proposal once the deadline has closed it', async () => {
+      // supply 6, threshold 4: 3 yes votes are insufficient and the deadline closes the vote unpassed.
+      const { membership, id, deadline } = await openProposal(6, 10n * UNIT, 10n * UNIT)
+      await mine(dao(voter).write.voteYes([id, 1n]))
+      await mine(dao(voter).write.voteYes([id, 2n]))
+      await mine(dao(voter).write.voteYes([id, 3n]))
+      await closeVoting(deadline)
+      assert.deepEqual(await dao(0).read.getVoting([id]), [3n, 4n, false, false, 0n])
+      // Burning afterwards would make the retained yes votes sufficient (threshold drops to 3), but
+      // the vote is already closed: this must not open a path to a late first-time passing.
+      await mine(membership.write.burnVotingNft([4n]))
+      await mine(membership.write.burnVotingNft([5n]))
+      assert.deepEqual(await dao(0).read.getVoting([id]), [3n, 3n, false, false, 0n])
+      await assert.rejects(dao(creator).write.releaseFunds([id]), /ProposalNotPassed/)
+      assert.deepEqual(await dao(0).read.getVoting([id]), [3n, 3n, false, false, 0n])
+      assert.equal(await released(id), false)
+    })
+
     await t.test('rejects a release request without enough yes votes under current supply', async () => {
       const { id } = await openProposal(6, 10n * UNIT, 10n * UNIT)
       await mine(dao(voter).write.voteYes([id, 1n]))
