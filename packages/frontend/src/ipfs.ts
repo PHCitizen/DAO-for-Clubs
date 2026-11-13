@@ -45,7 +45,7 @@ export interface IpfsTransport {
 export class IpfsTransportError extends Error {
   readonly kind = 'ipfs-transport-error' as const
   constructor(
-    readonly reason: 'upload-failed' | 'invalid-response' | 'retrieval-failed',
+    readonly reason: 'upload-failed' | 'invalid-response' | 'retrieval-failed' | 'content-not-found',
     message: string
   ) {
     super(message)
@@ -162,6 +162,12 @@ export function createPinataIpfsTransport(options: PinataTransportOptions = {}):
         throw new IpfsTransportError(
           'retrieval-failed',
           `The IPFS gateway could not be reached: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+      if (response.status === 404 || response.status === 410) {
+        throw new IpfsTransportError(
+          'content-not-found',
+          'The IPFS gateway does not have content for that identifier.'
         )
       }
       if (!response.ok) {

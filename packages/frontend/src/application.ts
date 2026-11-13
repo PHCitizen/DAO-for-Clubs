@@ -75,6 +75,7 @@ import {
   formatIpfsReference,
   isValidCid,
 } from './ipfs.js'
+import { type PublishedDocumentState, readPublishedDocument } from './publishedProposals.js'
 import {
   type ProposalChain,
   type ProposalConfig,
@@ -731,6 +732,36 @@ export type ProposalReadResult =
   | { status: 'not-found'; id: bigint }
   | TreasuryReadFailure
 
+export interface ProposalSummary {
+  proposal: ProposalTerms
+  formattedAmount: string
+  symbol: string
+}
+
+export type ProposalListResult =
+  | {
+      status: 'success'
+      chainId: number
+      daoAddress: Address
+      /** Newest (highest global ID) first. */
+      proposals: ProposalSummary[]
+    }
+  | TreasuryReadFailure
+
+export type PublishedProposalResult =
+  | {
+      status: 'success'
+      chainId: number
+      daoAddress: Address
+      /** The on-chain record, present regardless of the document's state. */
+      proposal: ProposalTerms
+      formattedAmount: string
+      symbol: string
+      document: PublishedDocumentState
+    }
+  | { status: 'not-found'; id: bigint }
+  | TreasuryReadFailure
+
 export type ProposalCountResult =
   | { status: 'success'; chainId: number; count: bigint }
   | TreasuryReadFailure
@@ -847,6 +878,22 @@ export function createApplication(
           testUsdAbi: publicAbis.TestUSD,
         }
       : null
+
+  async function readProposalTokenFormat(): Promise<{ decimals: number; symbol: string }> {
+    const [decimals, symbol] = await Promise.all([
+      proposalChain!.readContract<number>({
+        address: proposalConfig!.testUsdAddress,
+        abi: proposalConfig!.testUsdAbi,
+        functionName: 'decimals',
+      }),
+      proposalChain!.readContract<string>({
+        address: proposalConfig!.testUsdAddress,
+        abi: proposalConfig!.testUsdAbi,
+        functionName: 'symbol',
+      }),
+    ])
+    return { decimals: Number(decimals), symbol }
+  }
 
   const proposalChain: ProposalChain | null =
     rpc?.readContract && proposalConfig
@@ -1355,6 +1402,62 @@ export function createApplication(
         }
       } catch (error) {
         return toProposalReadFailure(error)
+      }
+    },
+
+    /** Wallet-free discovery of every on-chain proposal, newest first. */
+    async listProposals(): Promise<ProposalListResult> {
+      if (!proposalChain || !proposalConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'Proposal reads require a configured DAO deployment and RPC endpoint.',
+        }
+      }
+      try {
+        const count = await readProposalCount(proposalChain, proposalConfig)
+        const ids: bigint[] = []
+        for (let id = count; id >= 1n; id -= 1n) ids.push(id)
+        const records = await Promise.all(
+          ids.map((id) => readProposalTerms(proposalChain, proposalConfig, id))
+        )
+        const token = await readProposalTokenFormat()
+        const proposals: ProposalSummary[] = []
+        for (const proposal of records) {
+          if (proposal === null) continue
+          proposals.push({
+            proposal,
+            formattedAmount: formatUnits(proposal.amount, token.decimals),
+            symbol: token.symbol,
+          })
+        }
+        return {
+          status: 'success',
+          chainId: proposalConfig.chainId,
+          daoAddress: proposalConfig.daoAddress,
+          proposals,
+        }
+      } catch (error) {
+        return toProposalReadFailure(error)
+      }
+    },
+
+    /**
+     * Wallet-free read of one proposal: the on-chain record plus its published
+     * document, which is retrieved, content-verified, validated, and rendered.
+     * A document failure is reported in `document` and never hides the record;
+     * calling again retries retrieval.
+     */
+    async readPublishedProposal(id: bigint): Promise<PublishedProposalResult> {
+      const record = await this.readProposal(id)
+      if (record.status !== 'success') return record
+      return {
+        status: 'success',
+        chainId: record.chainId,
+        daoAddress: proposalConfig!.daoAddress,
+        proposal: record.proposal,
+        formattedAmount: record.formattedAmount,
+        symbol: record.symbol,
+        document: await readPublishedDocument(ipfs, record.proposal.documentReference),
       }
     },
 

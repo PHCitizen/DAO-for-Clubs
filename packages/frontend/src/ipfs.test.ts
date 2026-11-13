@@ -313,7 +313,11 @@ test('the transport retrieves bytes from a public gateway by CID', async () => {
   const missing = createPinataIpfsTransport({
     fetch: vi.fn(async () => new Response('not found', { status: 404 })) as unknown as typeof fetch,
   })
-  await expect(missing.retrieve(CID)).rejects.toMatchObject({ reason: 'retrieval-failed' })
+  await expect(missing.retrieve(CID)).rejects.toMatchObject({ reason: 'content-not-found' })
+  const broken = createPinataIpfsTransport({
+    fetch: vi.fn(async () => new Response('oops', { status: 502 })) as unknown as typeof fetch,
+  })
+  await expect(broken.retrieve(CID)).rejects.toMatchObject({ reason: 'retrieval-failed' })
   await expect(transport.retrieve('not-a-cid')).rejects.toMatchObject({
     reason: 'retrieval-failed',
   })
