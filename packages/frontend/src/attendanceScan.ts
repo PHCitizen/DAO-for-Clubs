@@ -1,4 +1,5 @@
 import { isAddress, type Address, type Hex } from 'viem'
+import type { AttendanceStorageState, AttendanceStore } from './attendanceStorage.js'
 import { ATTENDANCE_QR_VERSION, sameAttendanceEvent, type AttendanceEvent } from './attendance.js'
 
 /**
@@ -9,7 +10,8 @@ import { ATTENDANCE_QR_VERSION, sameAttendanceEvent, type AttendanceEvent } from
 export type ScanRejectionReason = 'malformed' | 'unexpected-fields' | 'wrong-event'
 
 export type ScanResult =
-  | { status: 'accepted'; count: number }
+  /** `saved` is true only when the entry reached browser storage. */
+  | { status: 'accepted'; count: number; saved: boolean }
   | { status: 'duplicate'; count: number }
   | { status: 'rejected'; reason: ScanRejectionReason; message: string; count: number }
 
@@ -18,6 +20,8 @@ export interface AttendanceCollectionView {
   event: AttendanceEvent
   count: number
   entries: Hex[]
+  /** Whether the counted entries are durably saved in this browser. */
+  storage: AttendanceStorageState
 }
 
 export type CameraFailureKind = 'permission-denied' | 'unavailable'
@@ -94,9 +98,11 @@ export interface AttendanceCollection {
   read(): AttendanceCollectionView
 }
 
-export function createAttendanceCollection(event: AttendanceEvent): AttendanceCollection {
-  const entries: Hex[] = []
-  const seen = new Set<Hex>()
+export function createAttendanceCollection(event: AttendanceEvent, store: AttendanceStore): AttendanceCollection {
+  const loaded = store.load()
+  const entries: Hex[] = [...loaded.entries]
+  const seen = new Set<Hex>(entries)
+  let storage = loaded.state
   const reject = (reason: ScanRejectionReason): ScanResult => ({
     status: 'rejected',
     reason,
@@ -114,9 +120,10 @@ export function createAttendanceCollection(event: AttendanceEvent): AttendanceCo
       if (seen.has(parsed.entry)) return { status: 'duplicate', count: entries.length }
       seen.add(parsed.entry)
       entries.push(parsed.entry)
-      return { status: 'accepted', count: entries.length }
+      storage = store.save(entries)
+      return { status: 'accepted', count: entries.length, saved: storage.status === 'saved' }
     },
-    read: () => ({ event: { ...event }, count: entries.length, entries: [...entries] }),
+    read: () => ({ event: { ...event }, count: entries.length, entries: [...entries], storage }),
   }
 }
 

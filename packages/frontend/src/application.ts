@@ -89,6 +89,7 @@ import {
   type AttendanceScanSession,
   type CameraScanner,
 } from './attendanceScan.js'
+import { createAttendanceStore, type AttendanceStorage } from './attendanceStorage.js'
 import {
   type IpfsCredentials,
   type IpfsTransport,
@@ -740,6 +741,8 @@ export type AttendanceCredentialResult =
 export interface ApplicationOptions {
   /** Camera transport for organizer attendance scanning; omit when no camera exists. */
   camera?: CameraScanner
+  /** Browser storage that keeps organizer attendance across reloads; omit when unavailable. */
+  attendanceStorage?: AttendanceStorage
   /** IPFS transport used for proposal pinning; omit to disable pinning. */
   ipfs?: IpfsTransport
 }
@@ -2238,7 +2241,7 @@ export function createApplication(
       const key = attendanceEventKey(event)
       let collection = attendanceCollections.get(key)
       if (!collection) {
-        collection = createAttendanceCollection(event)
+        collection = createAttendanceCollection(event, createAttendanceStore(options.attendanceStorage, event))
         attendanceCollections.set(key, collection)
       }
       const creator = proposal.creator.toLowerCase()
