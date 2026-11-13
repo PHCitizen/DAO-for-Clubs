@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
 import type { TreasuryListResult } from '../../application'
 import { app } from '../../applicationInstance'
+import { TreasuryCreationPanel } from './-creation'
 
 export const Route = createFileRoute('/treasuries/')({ component: TreasuryListPage })
 
@@ -50,6 +51,7 @@ function TreasuryListPage() {
         </button>
       </header>
 
+      <TreasuryCreationPanel onCreated={() => void load()} />
       <TreasuryListBody state={state} onRetry={() => void load()} />
     </main>
   )

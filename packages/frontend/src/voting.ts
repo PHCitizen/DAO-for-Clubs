@@ -9,6 +9,7 @@ import {
 export interface VotingProgress {
   proposalId: bigint
   yesVotes: bigint
+  noVotes: bigint
   threshold: bigint
   outcome: 'open' | 'passed' | 'closed-without-passing'
 }
@@ -37,15 +38,15 @@ export async function readVotingProgress(
   chain: ProposalChain, config: ProposalConfig, proposalId: bigint
 ): Promise<VotingProgress | null> {
   if (await readProposalTerms(chain, config, proposalId) === null) return null
-  const [yesVotes, threshold, passed, open] = await chain.readContract<readonly [bigint, bigint, boolean, boolean]>({
+  const [yesVotes, threshold, passed, open, noVotes] = await chain.readContract<readonly [bigint, bigint, boolean, boolean, bigint]>({
     address: config.daoAddress, abi: config.daoAbi, functionName: 'getVoting', args: [proposalId],
   })
-  return { proposalId, yesVotes, threshold, outcome: passed ? 'passed' : open ? 'open' : 'closed-without-passing' }
+  return { proposalId, yesVotes, noVotes, threshold, outcome: passed ? 'passed' : open ? 'open' : 'closed-without-passing' }
 }
 
-export async function castYesVote(
+export async function castVote(
   chain: ProposalChain, config: ProposalConfig,
-  input: { from: Address; proposalId: bigint; tokenId: bigint },
+  input: { from: Address; proposalId: bigint; tokenId: bigint; choice: 'yes' | 'no' },
   assertValid: () => Promise<void>,
 ) {
   const actualChainId = await chain.getChainId()
@@ -55,10 +56,10 @@ export async function castYesVote(
   try {
     hash = await chain.sendTransaction({
       from: input.from, address: config.daoAddress, abi: config.daoAbi,
-      functionName: 'voteYes', args: [input.proposalId, input.tokenId],
+      functionName: input.choice === 'yes' ? 'voteYes' : 'voteNo', args: [input.proposalId, input.tokenId],
     })
   } catch (error) {
-    throw new VoteSubmissionError('The yes vote was not submitted.', error)
+    throw new VoteSubmissionError(`The ${input.choice} vote was not submitted.`, error)
   }
   let receipt
   try { receipt = await chain.waitForTransactionReceipt(hash) }
@@ -67,12 +68,13 @@ export async function castYesVote(
   const confirmed = receipt.logs.some(log => {
     if (log.address.toLowerCase() !== config.daoAddress.toLowerCase()) return false
     try {
-      const event = decodeEventLog({ abi: config.daoAbi, eventName: 'YesVoteCast', data: log.data, topics: log.topics as [Hex, ...Hex[]] })
+      const event = decodeEventLog({ abi: config.daoAbi, eventName: input.choice === 'yes' ? 'YesVoteCast' : 'NoVoteCast', data: log.data, topics: log.topics as [Hex, ...Hex[]] })
+      if (event.eventName !== (input.choice === 'yes' ? 'YesVoteCast' : 'NoVoteCast')) return false
       const args = event.args as unknown as { proposalId: bigint; tokenId: bigint; voter: Address }
       return args.proposalId === input.proposalId && args.tokenId === input.tokenId && args.voter.toLowerCase() === input.from.toLowerCase()
     } catch { return false }
   })
-  if (!confirmed) throw new VoteConfirmationError('No matching yes ballot was found in the receipt.', hash)
+  if (!confirmed) throw new VoteConfirmationError(`No matching ${input.choice} ballot was found in the receipt.`, hash)
   // A failed refresh must not turn a confirmed ballot into an apparent failed submission.
   try {
     return { status: 'confirmed' as const, hash, progress: await readVotingProgress(chain, config, input.proposalId) }

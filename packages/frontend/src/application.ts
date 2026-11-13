@@ -1,6 +1,6 @@
 import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
 import {
-  castYesVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError,
+  castVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError,
   checkProposalPassing, PassingCheckSubmissionError, PassingCheckRevertedError, PassingCheckConfirmationError,
   type VotingProgress,
 } from './voting.js'
@@ -13,6 +13,7 @@ import {
   type DomainWalletError,
   WalletUnavailableError,
   NetworkSwitchRejectedError,
+  WalletRejectedError,
   NetworkSwitchError,
   TransactionRejectedError,
   normalizeWalletError,
@@ -75,6 +76,23 @@ import {
   proposalDocumentSizeProblem,
   renderProposalMarkdown,
 } from './proposal.js'
+import {
+  type AttendanceEvent,
+  InvalidAttendanceSignatureError,
+  attendanceSigningMessage,
+  deriveAttendanceCredential,
+  encodeAttendanceQr,
+  attendanceEventKey,
+  isAttendanceProposalId,
+} from './attendance.js'
+import {
+  CameraError,
+  createAttendanceCollection,
+  type AttendanceCollection,
+  createScanSession,
+  type AttendanceScanSession,
+  type CameraScanner,
+} from './attendanceScan.js'
 import {
   type IpfsCredentials,
   type IpfsTransport,
@@ -242,6 +260,13 @@ export type TreasuryListResult =
       treasuries: TreasuryListItem[]
     }
   | TreasuryReadFailure
+
+export type TreasuryCreationState =
+  | { status: 'idle' }
+  | { status: 'submitting' }
+  | { status: 'pending'; hash: Hex }
+  | { status: 'confirmed'; hash: Hex; treasury: Address }
+  | { status: 'failed'; message: string; hash?: Hex }
 
 export type TreasuryDetailResult =
   | {
@@ -675,7 +700,50 @@ export type ProposalPinResult =
   /** Uploaded bytes belong to an older draft; the current draft is not pinned. */
   | { status: 'draft-changed-during-upload'; message: string; pin: ProposalPin }
 
+export interface StartAttendanceScanRequest {
+  proposalId: bigint
+}
+
+export type { AttendanceScanSession, ScanListener } from './attendanceScan.js'
+
+export type StartAttendanceScanResult =
+  | { status: 'scanning'; session: AttendanceScanSession }
+  | {
+      status:
+        | 'wallet-not-connected'
+        | 'unconfigured'
+        | 'invalid-proposal-id'
+        | 'not-found'
+        | 'not-organizer'
+        | 'camera-permission-denied'
+        | 'camera-unavailable'
+        | 'read-failed'
+      message: string
+    }
+
+export interface PrepareAttendanceCredentialRequest {
+  proposalId: bigint
+}
+
+/** Only public fields: never the secret, signature, or attendee address. */
+export type AttendanceCredentialResult =
+  | ({ status: 'ready'; entry: Hex; qr: string } & AttendanceEvent)
+  | {
+      status:
+        | 'wallet-not-connected'
+        | 'wallet-unavailable'
+        | 'wallet-rejected'
+        | 'unconfigured'
+        | 'chain-mismatch'
+        | 'stale-configuration'
+        | 'invalid-proposal-id'
+        | 'signing-failed'
+      message: string
+    }
+
 export interface ApplicationOptions {
+  /** Camera transport for organizer attendance scanning; omit when no camera exists. */
+  camera?: CameraScanner
   /** IPFS transport used for proposal pinning; omit to disable pinning. */
   ipfs?: IpfsTransport
 }
@@ -774,7 +842,7 @@ export type VotingReadResult =
   | { status: 'not-found'; id: bigint }
   | TreasuryReadFailure
 
-export type YesVoteResult =
+export type VoteResult =
   | { status: 'confirmed'; hash: Hex; progress: VotingProgress | null }
   | { status: 'invalid-input'; message: string }
   | TransactionActionFailure
@@ -826,7 +894,19 @@ export function createApplication(
     }
   }
 
+  // In-session collections keyed by deployment and proposal; persistence is a later slice.
+  const attendanceCollections = new Map<string, AttendanceCollection>()
+  const activeScans = new Map<string, AttendanceScanSession>()
+
   const publicAbis = publicArtifacts.abis as unknown as TreasuryAbis
+
+  let treasuryCreationState: TreasuryCreationState = { status: 'idle' }
+  let treasuryCreationBusy = false
+  const treasuryCreationListeners = new Set<(state: TreasuryCreationState) => void>()
+  function emitTreasuryCreation(state: TreasuryCreationState) {
+    treasuryCreationState = state
+    for (const listener of treasuryCreationListeners) listener(state)
+  }
 
   const treasuryReads: TreasuryReads | null =
     rpc?.readContract && deploymentContext.daoAddress
@@ -1116,6 +1196,69 @@ export function createApplication(
   }
 
   return {
+    readTreasuryCreationState: () => treasuryCreationState,
+
+    onTreasuryCreationStateChanged(listener: (state: TreasuryCreationState) => void) {
+      treasuryCreationListeners.add(listener)
+      return () => { treasuryCreationListeners.delete(listener) }
+    },
+
+    async createTreasury(): Promise<TreasuryCreationState> {
+      if (treasuryCreationBusy) return treasuryCreationState
+      treasuryCreationBusy = true
+      let hash: Hex | undefined
+      try {
+        if (!adapter) throw new WalletUnavailableError()
+        if (!deploymentContext.isSupported || !rpc?.waitForTransactionReceipt) {
+          throw new Error('Treasury creation requires a supported deployment and transaction confirmation RPC.')
+        }
+        emitTreasuryCreation({ status: 'submitting' })
+        const prepared = await this.prepareDeploymentAction({ target: 'dao' })
+        const [rpcChain, account, chainId] = await Promise.all([
+          rpc.getChainId(), adapter.getAccount(), adapter.getChainId(),
+        ])
+        if (rpcChain !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, rpcChain)
+        if (chainId !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, chainId ?? 0)
+        if (account?.toLowerCase() !== prepared.context.account.toLowerCase()) throw new StaleActionConfigurationError()
+        prepared.assertValid()
+        hash = await adapter.sendTransaction({
+          from: prepared.context.account,
+          to: prepared.context.targetAddress,
+          abi: publicAbis.DAO,
+          functionName: 'createTreasury',
+          args: [],
+        })
+        emitTreasuryCreation({ status: 'pending', hash })
+        const receipt = await rpc.waitForTransactionReceipt(hash)
+        if (receipt.status !== 'success') throw new Error('The treasury creation transaction reverted.')
+        let treasury: Address | undefined
+        for (const log of receipt.logs) {
+          if (log.address.toLowerCase() !== prepared.context.targetAddress.toLowerCase()) continue
+          try {
+            const event = decodeEventLog({ abi: publicAbis.DAO, eventName: 'TreasuryCreated', data: log.data, topics: [...log.topics] as [Hex, ...Hex[]] })
+            const args = event.args as unknown as { treasury: Address; administrator: Address }
+            if (args.administrator.toLowerCase() === prepared.context.account.toLowerCase()) treasury = args.treasury
+          } catch { /* Ignore unrelated logs. */ }
+        }
+        if (!treasury) throw new Error('The transaction was mined, but its treasury creation event could not be verified.')
+        emitTreasuryCreation({ status: 'confirmed', hash, treasury })
+      } catch (error) {
+        const rejected = error instanceof TransactionRejectedError ||
+          (error !== null && typeof error === 'object' && 'code' in error && error.code === 4001)
+        emitTreasuryCreation({
+          status: 'failed',
+          message: hash
+            ? `${error instanceof Error ? error.message : String(error)} Review the transaction before trying again.`
+            : rejected ? 'Transaction rejected in your wallet. Nothing was submitted.'
+              : error instanceof Error ? error.message : String(error),
+          ...(hash ? { hash } : {}),
+        })
+      } finally {
+        treasuryCreationBusy = false
+      }
+      return treasuryCreationState
+    },
+
     async readVoting(proposalId: bigint): Promise<VotingReadResult> {
       if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'Voting requires a configured DAO and RPC endpoint.' }
       try {
@@ -1124,14 +1267,22 @@ export function createApplication(
       } catch (error) { return toProposalReadFailure(error) }
     },
 
-    async voteYes(proposalId: bigint, tokenId: bigint): Promise<YesVoteResult> {
+    async voteYes(proposalId: bigint, tokenId: bigint): Promise<VoteResult> {
+      return this.submitVote(proposalId, tokenId, 'yes')
+    },
+
+    async voteNo(proposalId: bigint, tokenId: bigint): Promise<VoteResult> {
+      return this.submitVote(proposalId, tokenId, 'no')
+    },
+
+    async submitVote(proposalId: bigint, tokenId: bigint, choice: 'yes' | 'no'): Promise<VoteResult> {
       if (proposalId <= 0n || tokenId <= 0n || proposalId >= 2n ** 256n || tokenId >= 2n ** 256n) return { status: 'invalid-input', message: 'Enter valid positive proposal and token IDs.' }
       if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'Voting requires a configured DAO and RPC endpoint.' }
       if (!adapter) return { status: 'wallet-unavailable', message: 'No wallet extension is available.' }
       if (walletState.status !== 'connected') return { status: 'wallet-not-connected', message: 'Connect the voting NFT holder wallet.' }
       try {
         const prepared = await this.prepareDeploymentAction({ target: 'dao' })
-        return await castYesVote(proposalChain, proposalConfig, { from: prepared.context.account, proposalId, tokenId }, async () => {
+        return await castVote(proposalChain, proposalConfig, { from: prepared.context.account, proposalId, tokenId, choice }, async () => {
           const [account, chainId] = await Promise.all([adapter.getAccount(), adapter.getChainId()])
           if (chainId !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, chainId ?? 0)
           if (account?.toLowerCase() !== prepared.context.account.toLowerCase()) throw new StaleActionConfigurationError()
@@ -1148,7 +1299,7 @@ export function createApplication(
           revertedMessage: 'The vote reverted. No ballot was recorded.',
           rpcUnavailableMessage: 'Voting could not reach the configured RPC endpoint.',
           rejectedMessage: 'The vote was rejected in your wallet. Nothing was submitted.',
-          submissionMessage: 'The yes vote was not submitted. Check ownership, token consumption, and whether voting is still open.',
+          submissionMessage: `The ${choice} vote was not submitted. Check ownership, token consumption, and whether voting is still open.`,
         })
       }
     },
@@ -2038,6 +2189,125 @@ export function createApplication(
           })
         }
       }
+    },
+
+    /**
+     * Signs the frozen attendance message with the connected wallet and derives
+     * the event QR. The secret and signature stay inside this function; the
+     * result is discarded as stale if the account or network changes mid-signing.
+     */
+    async prepareAttendanceCredential(
+      request: PrepareAttendanceCredentialRequest
+    ): Promise<AttendanceCredentialResult> {
+      if (!isAttendanceProposalId(request.proposalId)) {
+        return { status: 'invalid-proposal-id', message: 'The proposal ID is not a valid unsigned 256-bit number.' }
+      }
+      if (!adapter) {
+        return { status: 'wallet-unavailable', message: 'No wallet extension is available to sign the attendance message.' }
+      }
+      let prepared: PreparedAction
+      try {
+        prepared = await this.prepareDeploymentAction({ target: 'dao' })
+      } catch (error) {
+        if (error instanceof WalletNotConnectedError) {
+          return { status: 'wallet-not-connected', message: 'Connect your wallet to prepare an attendance QR.' }
+        }
+        if (error instanceof ChainMismatchError) {
+          return {
+            status: 'chain-mismatch',
+            message: `The wallet is on chain ${error.actualChainId}, but this deployment uses chain ${error.expectedChainId}.`,
+          }
+        }
+        if (error instanceof StaleActionConfigurationError) {
+          return { status: 'stale-configuration', message: error.message }
+        }
+        if (error instanceof DeploymentNotConfiguredError || error instanceof DeploymentNotDeployedError) {
+          return { status: 'unconfigured', message: error.message }
+        }
+        throw error
+      }
+
+      const { account, chainId, targetAddress } = prepared.context
+      const event: AttendanceEvent = { chainId, daoAddress: targetAddress, proposalId: request.proposalId }
+      try {
+        const signature = await adapter.signMessage(account, attendanceSigningMessage(event))
+        prepared.assertValid()
+        const { entry } = deriveAttendanceCredential(signature, event.proposalId)
+        return { status: 'ready', ...event, entry, qr: encodeAttendanceQr({ ...event, entry }) }
+      } catch (error) {
+        if (error instanceof StaleActionConfigurationError) {
+          return { status: 'stale-configuration', message: error.message }
+        }
+        if (error instanceof WalletRejectedError) {
+          return { status: 'wallet-rejected', message: 'The signature request was rejected in your wallet. No attendance QR was created.' }
+        }
+        if (error instanceof InvalidAttendanceSignatureError) {
+          return { status: 'signing-failed', message: error.message }
+        }
+        return { status: 'signing-failed', message: 'The wallet could not sign the attendance message. Try again.' }
+      }
+    },
+
+    /**
+     * Organizer workflow: the proposal creator starts the camera and every
+     * decoded QR is validated and deduplicated into the event's collection. No
+     * attendee NFT, vote, payout, or chain transaction is involved.
+     */
+    async startAttendanceScan(request: StartAttendanceScanRequest): Promise<StartAttendanceScanResult> {
+      if (!isAttendanceProposalId(request.proposalId)) {
+        return { status: 'invalid-proposal-id', message: 'The proposal ID is not a valid unsigned 256-bit number.' }
+      }
+      if (walletState.status !== 'connected') {
+        return { status: 'wallet-not-connected', message: 'Connect the proposal creator wallet to scan attendance.' }
+      }
+      if (!proposalChain || !proposalConfig) {
+        return { status: 'unconfigured', message: 'Attendance scanning requires a configured DAO deployment and RPC endpoint.' }
+      }
+      let proposal: ProposalTerms | null
+      try {
+        proposal = await readProposalTerms(proposalChain, proposalConfig, request.proposalId)
+      } catch {
+        return { status: 'read-failed', message: 'The proposal could not be read. Check the network and try again.' }
+      }
+      if (proposal === null) return { status: 'not-found', message: 'This proposal does not exist in the configured DAO.' }
+      if (proposal.creator.toLowerCase() !== walletState.account.toLowerCase()) {
+        return { status: 'not-organizer', message: 'Only the proposal creator can collect attendance for this event.' }
+      }
+      if (!options.camera) {
+        return { status: 'camera-unavailable', message: new CameraError('unavailable').message }
+      }
+
+      const event: AttendanceEvent = {
+        chainId: proposalConfig.chainId,
+        daoAddress: proposalConfig.daoAddress,
+        proposalId: request.proposalId,
+      }
+      const key = attendanceEventKey(event)
+      let collection = attendanceCollections.get(key)
+      if (!collection) {
+        collection = createAttendanceCollection(event)
+        attendanceCollections.set(key, collection)
+      }
+      const creator = proposal.creator.toLowerCase()
+      let session: AttendanceScanSession
+      try {
+        session = await createScanSession({
+          collection,
+          camera: options.camera,
+          isOrganizer: () => walletState.status === 'connected' && walletState.account.toLowerCase() === creator,
+        })
+      } catch (error) {
+        const kind = error instanceof CameraError ? error.kind : 'unavailable'
+        return {
+          status: kind === 'permission-denied' ? 'camera-permission-denied' : 'camera-unavailable',
+          message: new CameraError(kind).message,
+        }
+      }
+      // One live camera per event: a newer session replaces the older one.
+      activeScans.get(key)?.stop()
+      activeScans.set(key, session)
+      session.onStop(() => { if (activeScans.get(key) === session) activeScans.delete(key) })
+      return { status: 'scanning', session }
     },
 
     /**

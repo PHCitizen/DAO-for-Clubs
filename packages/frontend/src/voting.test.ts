@@ -9,7 +9,7 @@ const DAO: Address = '0x0000000000000000000000000000000000000001'
 const HOLDER: Address = '0x0000000000000000000000000000000000000002'
 const HASH = `0x${'ab'.repeat(32)}` as Hex
 
-function fixture() {
+function fixture(choice: 'yes' | 'no' = 'yes') {
   let accountListener: AccountChangedListener = () => {}
   const wallet: WalletAdapter = {
     isAvailable: () => true, connect: async () => HOLDER, disconnect: async () => {},
@@ -17,11 +17,12 @@ function fixture() {
     switchChain: async () => {}, onChainChanged: () => () => {},
     onAccountChanged: listener => { accountListener = listener; return () => {} },
     sendTransaction: vi.fn(async () => HASH),
+    signMessage: async () => { throw new Error('signing is not used by voting') },
   }
   const receipt = {
     status: 'success' as const, blockNumber: 1n,
     logs: [{ address: DAO, data: '0x' as Hex, topics: encodeEventTopics({
-      abi: artifacts.abis.DAO, eventName: 'YesVoteCast', args: { proposalId: 1n, tokenId: 1n, voter: HOLDER },
+      abi: artifacts.abis.DAO, eventName: choice === 'yes' ? 'YesVoteCast' : 'NoVoteCast', args: { proposalId: 1n, tokenId: 1n, voter: HOLDER },
     }) as Hex[] }],
   }
   const rpc: RpcAdapter = {
@@ -42,6 +43,7 @@ function passingCheckFixture() {
     switchChain: async () => {}, onChainChanged: () => () => {},
     onAccountChanged: listener => { accountListener = listener; return () => {} },
     sendTransaction: vi.fn(async () => HASH),
+    signMessage: async () => { throw new Error('signing is not used by the passing check') },
   }
   const receipt = {
     status: 'success' as const, blockNumber: 1n,
@@ -95,6 +97,34 @@ test('account changes during async preparation cannot submit a stale vote', asyn
   vi.mocked(rpc.getChainId).mockImplementationOnce(async () => { changeAccount(); return 31337 })
   expect((await app.voteYes(1n, 1n)).status).toBe('stale-configuration')
   expect(wallet.sendTransaction).not.toHaveBeenCalled()
+})
+
+test('no voting uses shared wallet, ID, deployment and stale-account guards', async () => {
+  const { app, wallet, rpc, changeAccount } = fixture('no')
+  expect((await app.voteNo(1n, 1n)).status).toBe('wallet-not-connected')
+  await app.connect()
+  expect((await app.voteNo(0n, 1n)).status).toBe('invalid-input')
+  expect((await app.voteNo(1n, 2n ** 256n)).status).toBe('invalid-input')
+  vi.mocked(wallet.getChainId).mockResolvedValueOnce(1)
+  expect((await app.voteNo(1n, 1n)).status).toBe('chain-mismatch')
+  vi.mocked(rpc.getChainId).mockImplementationOnce(async () => { changeAccount(); return 31337 })
+  expect((await app.voteNo(1n, 1n)).status).toBe('stale-configuration')
+  expect(wallet.sendTransaction).not.toHaveBeenCalled()
+})
+
+test('no confirmation requires the actual no ballot, not a yes event', async () => {
+  const yes = fixture()
+  await yes.app.connect()
+  expect(await yes.app.voteNo(1n, 1n)).toMatchObject({ status: 'transaction-failed', stage: 'confirmation' })
+  const { app, wallet, rpc } = fixture('no')
+  await app.connect()
+  expect(await app.voteNo(1n, 1n)).toEqual({ status: 'confirmed', hash: HASH, progress: null })
+  expect(await app.voteYes(1n, 1n)).toMatchObject({ status: 'transaction-failed', stage: 'confirmation' })
+  expect(await app.voteNo(1n, 2n)).toMatchObject({ status: 'transaction-failed', stage: 'confirmation' })
+  vi.mocked(wallet.sendTransaction).mockRejectedValueOnce(new TransactionRejectedError())
+  expect((await app.voteNo(1n, 1n)).status).toBe('wallet-rejected')
+  vi.mocked(rpc.waitForTransactionReceipt!).mockResolvedValueOnce({ status: 'reverted', blockNumber: 1n, logs: [] })
+  expect(await app.voteNo(1n, 1n)).toMatchObject({ status: 'transaction-failed', stage: 'reverted' })
 })
 
 // ---------------------------------------------------------------------------

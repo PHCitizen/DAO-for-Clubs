@@ -37,6 +37,7 @@ test('explicit passing check records passing after burns without a new ballot', 
       onAccountChanged: () => () => {},
       onChainChanged: () => () => {},
       switchChain: async () => {},
+      signMessage: async () => { throw new Error('signing is not used by the passing check') },
       sendTransaction: async request => connection.provider.request({ method: 'eth_sendTransaction', params: [{
         from: request.from, to: request.to,
         data: encodeFunctionData({ abi: request.abi, functionName: request.functionName, args: request.args }),
@@ -55,18 +56,18 @@ test('explicit passing check records passing after burns without a new ballot', 
       await mine(dao(3).write.voteYes([id, 1n]))
       await mine(dao(3).write.voteYes([id, 2n]))
       await mine(dao(3).write.voteYes([id, 3n]))
-      assert.deepEqual(await dao().read.getVoting([id]), [3n, 4n, false, true])
+      assert.deepEqual(await dao().read.getVoting([id]), [3n, 4n, false, true, 0n])
       // burn two credentials, dropping current supply to 4; threshold becomes 3
       await mine(membership.write.burnVotingNft([4n]))
       await mine(membership.write.burnVotingNft([5n]))
-      assert.deepEqual(await dao().read.getVoting([id]), [3n, 3n, false, true])
+      assert.deepEqual(await dao().read.getVoting([id]), [3n, 3n, false, true, 0n])
       // explicit permissionless check, through the application action, records
       // passing without a fourth vote, submitted by an unrelated wallet
       const result = await app.checkPassing(id)
       assert.equal(result.status, 'confirmed', JSON.stringify(result, (_, value) => typeof value === 'bigint' ? String(value) : value))
       if (result.status !== 'confirmed') throw new Error('unreachable')
-      assert.deepEqual(result.progress, { proposalId: id, yesVotes: 3n, threshold: 3n, outcome: 'passed' })
-      assert.deepEqual(await dao().read.getVoting([id]), [3n, 3n, true, false])
+      assert.deepEqual(result.progress, { proposalId: id, yesVotes: 3n, noVotes: 0n, threshold: 3n, outcome: 'passed' })
+      assert.deepEqual(await dao().read.getVoting([id]), [3n, 3n, true, false, 0n])
       // feedback is a vote-passing determination, not a payout: no treasury balance is touched
       const asset = getContract({ address: f.testUsdAddress, abi: f.testUsdArtifact.abi, client: f.publicClient })
       assert.equal(await asset.read.balanceOf([address]), 0n)
@@ -77,7 +78,7 @@ test('explicit passing check records passing after burns without a new ballot', 
       await mine(dao(3).write.voteYes([id, 1n]))
       const insufficient = await app.checkPassing(id)
       assert.equal(insufficient.status, 'transaction-failed')
-      assert.deepEqual(await dao().read.getVoting([id]), [1n, 4n, false, true])
+      assert.deepEqual(await dao().read.getVoting([id]), [1n, 4n, false, true, 0n])
 
       const closed = await setup(2)
       await mine(dao(3).write.voteYes([closed.id, 1n]))
@@ -92,10 +93,10 @@ test('explicit passing check records passing after burns without a new ballot', 
       await mine(dao(3).write.voteYes([id, 2n]))
       // threshold stays 4 at supply 6; two yes votes cannot qualify
       await assert.rejects(dao(2).write.checkPassing([id]), /InsufficientYesVotes/)
-      assert.deepEqual(await dao().read.getVoting([id]), [2n, 4n, false, true])
+      assert.deepEqual(await dao().read.getVoting([id]), [2n, 4n, false, true, 0n])
       // minting raises the threshold further before any check can succeed
       await mine(membership.write.mintVotingNft([f.accounts[3]]))
-      assert.deepEqual(await dao().read.getVoting([id]), [2n, 4n, false, true])
+      assert.deepEqual(await dao().read.getVoting([id]), [2n, 4n, false, true, 0n])
       await assert.rejects(dao(2).write.checkPassing([id]), /InsufficientYesVotes/)
     })
 
@@ -103,7 +104,7 @@ test('explicit passing check records passing after burns without a new ballot', 
       const already = await setup(2)
       await mine(dao(3).write.voteYes([already.id, 1n]))
       await mine(dao(3).write.voteYes([already.id, 2n]))
-      assert.deepEqual(await dao().read.getVoting([already.id]), [2n, 2n, true, false])
+      assert.deepEqual(await dao().read.getVoting([already.id]), [2n, 2n, true, false, 0n])
       await assert.rejects(dao(2).write.checkPassing([already.id]), /VotingClosed/)
 
       const boundary = await setup(2)
@@ -114,13 +115,13 @@ test('explicit passing check records passing after burns without a new ballot', 
       // current supply now 1; threshold 1; the retained yes vote would qualify
       await connection.provider.request({ method: 'evm_setNextBlockTimestamp', params: [Number(boundary.deadline - 1n)] })
       await connection.provider.request({ method: 'evm_mine' })
-      assert.deepEqual(await dao().read.getVoting([boundary.id]), [1n, 1n, false, true])
+      assert.deepEqual(await dao().read.getVoting([boundary.id]), [1n, 1n, false, true, 0n])
       await connection.provider.request({ method: 'evm_setNextBlockTimestamp', params: [Number(boundary.deadline)] })
       await connection.provider.request({ method: 'evm_mine' })
       // at the exact deadline the vote is closed even though the threshold was met earlier
-      assert.deepEqual(await dao().read.getVoting([boundary.id]), [1n, 1n, false, false])
+      assert.deepEqual(await dao().read.getVoting([boundary.id]), [1n, 1n, false, false, 0n])
       await assert.rejects(dao(2).write.checkPassing([boundary.id]), /VotingClosed/)
-      assert.deepEqual(await dao().read.getVoting([boundary.id]), [1n, 1n, false, false])
+      assert.deepEqual(await dao().read.getVoting([boundary.id]), [1n, 1n, false, false, 0n])
     })
 
     await t.test('recorded passing is irreversible across later minting and burning', async () => {
@@ -130,11 +131,11 @@ test('explicit passing check records passing after burns without a new ballot', 
       await mine(membership.write.burnVotingNft([3n]))
       await mine(membership.write.burnVotingNft([4n]))
       await mine(dao(2).write.checkPassing([id]))
-      assert.deepEqual(await dao().read.getVoting([id]), [2n, 2n, true, false])
+      assert.deepEqual(await dao().read.getVoting([id]), [2n, 2n, true, false, 0n])
       await mine(membership.write.mintVotingNft([f.accounts[4]]))
       await mine(membership.write.mintVotingNft([f.accounts[4]]))
       await mine(membership.write.burnVotingNft([1n]))
-      assert.deepEqual(await dao().read.getVoting([id]), [2n, 2n, true, false])
+      assert.deepEqual(await dao().read.getVoting([id]), [2n, 2n, true, false, 0n])
       await assert.rejects(dao(2).write.checkPassing([id]), /VotingClosed/)
     })
 
@@ -144,15 +145,15 @@ test('explicit passing check records passing after burns without a new ballot', 
       // than an automatic pass inside voteYes itself.
       const withVote = await setup(2)
       await mine(dao(3).write.voteYes([withVote.id, 1n]))
-      assert.deepEqual(await dao().read.getVoting([withVote.id]), [1n, 2n, false, true])
+      assert.deepEqual(await dao().read.getVoting([withVote.id]), [1n, 2n, false, true, 0n])
       await mine(withVote.membership.write.burnVotingNft([1n]))
       await mine(withVote.membership.write.burnVotingNft([2n]))
-      assert.deepEqual(await dao().read.getVoting([withVote.id]), [1n, 1n, false, true])
+      assert.deepEqual(await dao().read.getVoting([withVote.id]), [1n, 1n, false, true, 0n])
       await mine(dao(2).write.checkPassing([withVote.id]))
-      assert.deepEqual(await dao().read.getVoting([withVote.id]), [1n, 1n, true, false])
+      assert.deepEqual(await dao().read.getVoting([withVote.id]), [1n, 1n, true, false, 0n])
 
       const withoutVote = await setup(0)
-      assert.deepEqual(await dao().read.getVoting([withoutVote.id]), [0n, 1n, false, true])
+      assert.deepEqual(await dao().read.getVoting([withoutVote.id]), [0n, 1n, false, true, 0n])
       await assert.rejects(dao(2).write.checkPassing([withoutVote.id]), /InsufficientYesVotes/)
     })
   } finally { await connection.close() }

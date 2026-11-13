@@ -33,6 +33,7 @@ test('application voting NFT minting and membership inspection against a real lo
       switchChain: async () => {},
       onAccountChanged: () => () => {},
       onChainChanged: () => () => {},
+      signMessage: async () => { throw new Error('signMessage is not used in this test') },
       sendTransaction: async (tx) => {
         if (mode === 'reject') throw Object.assign(new Error('Rejected'), { code: 4001 })
         if (mode === 'revert') {

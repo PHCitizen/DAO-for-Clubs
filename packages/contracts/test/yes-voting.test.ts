@@ -34,6 +34,7 @@ test('yes ballots and recorded passing through real contracts and application ac
       onAccountChanged: () => () => {},
       onChainChanged: () => () => {},
       switchChain: async () => {},
+      signMessage: async () => { throw new Error('signing is not used by voting') },
       sendTransaction: async request => connection.provider.request({ method: 'eth_sendTransaction', params: [{
         from: request.from, to: request.to,
         data: encodeFunctionData({ abi: request.abi, functionName: request.functionName, args: request.args }),
@@ -66,7 +67,7 @@ test('yes ballots and recorded passing through real contracts and application ac
         await vote(id, 1n)
         await assert.rejects(dao(3).write.voteYes([id, 1n]), /BallotAlreadyCast/)
         for (let token = 2n; token <= threshold; token++) await vote(id, token)
-        assert.deepEqual(await progress(id), { proposalId: id, yesVotes: threshold, threshold, outcome: 'passed' })
+        assert.deepEqual(await progress(id), { proposalId: id, yesVotes: threshold, noVotes: 0n, threshold, outcome: 'passed' })
         assert.deepEqual(await dao().read.getProposal([id]), immutableTerms)
         const asset = getContract({ address: f.testUsdAddress, abi: f.testUsdArtifact.abi, client: f.publicClient })
         assert.equal(await asset.read.balanceOf([address]), 0n)
@@ -116,7 +117,65 @@ test('yes ballots and recorded passing through real contracts and application ac
       await mine(a.membership.write.burnVotingNft([3n]))
       // Reads never infer a recorded pass, even when retained votes meet the
       // live threshold after every credential is burned.
-      assert.deepEqual(await progress(a.id), { proposalId: a.id, yesVotes: 1n, threshold: 1n, outcome: 'open' })
+      assert.deepEqual(await progress(a.id), { proposalId: a.id, yesVotes: 1n, noVotes: 0n, threshold: 1n, outcome: 'open' })
+    })
+
+    await t.test('no ballots consume credentials across choices without approving by participation', async () => {
+      const unanimousNo = await setup(1)
+      assert.equal((await app.voteNo(unanimousNo.id, 1n)).status, 'confirmed')
+      assert.deepEqual(await progress(unanimousNo.id), { proposalId: unanimousNo.id, yesVotes: 0n, noVotes: 1n, threshold: 1n, outcome: 'open' })
+      const a = await setup(6)
+      const result = await app.voteNo(a.id, 1n)
+      assert.equal(result.status, 'confirmed')
+      assert.deepEqual(await progress(a.id), { proposalId: a.id, yesVotes: 0n, noVotes: 1n, threshold: 4n, outcome: 'open' })
+      await assert.rejects(dao(3).write.voteNo([a.id, 1n]), /BallotAlreadyCast/)
+      await assert.rejects(dao(3).write.voteYes([a.id, 1n]), /BallotAlreadyCast/)
+      await assert.rejects(dao(4).write.voteNo([a.id, 1n]), /BallotAlreadyCast/)
+      await vote(a.id, 2n)
+      await assert.rejects(dao(3).write.voteNo([a.id, 2n]), /BallotAlreadyCast/)
+      assert.equal((await app.voteNo(a.id, 3n)).status, 'confirmed')
+      assert.equal((await progress(a.id)).outcome, 'open')
+      await mine(dao().write.createProposal([a.address, 1n, a.deadline, 'ipfs://other']))
+      const other = await dao().read.proposalCount() as bigint
+      assert.equal((await app.voteNo(other, 1n)).status, 'confirmed')
+      const b = await setup(0)
+      await mine(b.membership.write.mintVotingNft([f.accounts[4]]))
+      await assert.rejects(dao(4).write.voteNo([a.id, 4n]), /NotVotingNftHolder/)
+      await assert.rejects(dao(3).write.voteNo([b.id, 1n]), /NotVotingNftHolder/)
+      assert.equal((await app.voteNo(b.id, 1n)).status, 'transaction-failed')
+      assert.equal((await progress(b.id)).noVotes, 0n)
+      await mine(a.membership.write.burnVotingNft([6n]))
+      await assert.rejects(dao(3).write.voteNo([a.id, 6n]), /NonexistentVotingNft/)
+      assert.equal((await progress(a.id)).noVotes, 2n)
+      assert.equal(await dao().read.ballotConsumed([a.id, 4n]), false)
+    })
+
+    await t.test('a no vote records existing qualifying yes votes after burns and closes voting', async () => {
+      const { id, membership } = await setup(6)
+      for (const token of [1n, 2n, 3n]) await vote(id, token)
+      await mine(membership.write.burnVotingNft([5n]))
+      await mine(membership.write.burnVotingNft([6n]))
+      assert.equal((await progress(id)).outcome, 'open')
+      assert.equal((await app.voteNo(id, 4n)).status, 'confirmed')
+      assert.deepEqual(await progress(id), { proposalId: id, yesVotes: 3n, noVotes: 1n, threshold: 3n, outcome: 'passed' })
+      await assert.rejects(dao(3).write.voteNo([id, 1n]), /VotingClosed/)
+      assert.equal((await app.voteNo(id, 1n)).status, 'transaction-failed')
+      assert.equal((await progress(id)).noVotes, 1n)
+    })
+
+    await t.test('no votes reject exactly at deadline and after a yes-triggered early close', async () => {
+      const early = await setup(1)
+      await vote(early.id, 1n)
+      await assert.rejects(dao(3).write.voteNo([early.id, 1n]), /VotingClosed/)
+      const { id, deadline } = await setup(3)
+      await connection.provider.request({ method: 'evm_setNextBlockTimestamp', params: [Number(deadline - 1n)] })
+      assert.equal((await app.voteNo(id, 1n)).status, 'confirmed')
+      await connection.provider.request({ method: 'evm_setNextBlockTimestamp', params: [Number(deadline)] })
+      await connection.provider.request({ method: 'evm_mine' })
+      await assert.rejects(dao(3).write.voteNo([id, 2n]), /VotingClosed/)
+      assert.equal((await app.voteNo(id, 2n)).status, 'transaction-failed')
+      assert.deepEqual(await progress(id), { proposalId: id, yesVotes: 0n, noVotes: 1n, threshold: 2n, outcome: 'closed-without-passing' })
+      assert.equal(await dao().read.ballotConsumed([id, 2n]), false)
     })
 
     await t.test('exact chain deadline closes voting, including a would-be passing ballot', async () => {
