@@ -21,6 +21,15 @@ export interface AttendanceEvent {
   proposalId: bigint
 }
 
+/** Canonical identity of an event: addresses compare case-insensitively. */
+export function attendanceEventKey(event: AttendanceEvent): string {
+  return `${event.chainId}:${event.daoAddress.toLowerCase()}:${event.proposalId}`
+}
+
+export function sameAttendanceEvent(a: AttendanceEvent, b: AttendanceEvent): boolean {
+  return attendanceEventKey(a) === attendanceEventKey(b)
+}
+
 export function attendanceSigningMessage(event: AttendanceEvent): string {
   return [
     ATTENDANCE_MESSAGE_LABEL,
