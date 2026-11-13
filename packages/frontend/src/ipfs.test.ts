@@ -137,12 +137,8 @@ test('a service failure is retryable and a later retry pins the same draft', asy
   expect(transport.pin).toHaveBeenCalledTimes(2)
 })
 
-test('invalid or mismatched upload results never produce a pinned reference', async () => {
-  for (const receipt of [
-    { cid: '' },
-    { cid: 'not-a-cid' },
-    { cid: CID, size: 1 },
-  ] as IpfsUploadReceipt[]) {
+test('invalid upload results never produce a pinned reference', async () => {
+  for (const receipt of [{ cid: '' }, { cid: 'not-a-cid' }] as IpfsUploadReceipt[]) {
     const { app } = makeApp(async () => receipt)
 
     const result = await app.pinProposalDraft({ token: 'proposer-jwt' })

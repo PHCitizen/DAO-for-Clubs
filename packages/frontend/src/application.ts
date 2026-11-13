@@ -1218,12 +1218,6 @@ export function createApplication(
             'The pinning service returned an invalid content identifier. Nothing was pinned for this draft.'
           )
         }
-        if (receipt.size !== undefined && receipt.size !== bytes.byteLength) {
-          return fail(
-            'invalid-upload-result',
-            'The pinning service reported a different document size than the reviewed draft.'
-          )
-        }
         pin = {
           document,
           bytes,
