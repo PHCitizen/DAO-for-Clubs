@@ -11,6 +11,7 @@ import {
   isValidCid,
   parseIpfsReference,
 } from './ipfs'
+import { MAX_PROPOSAL_DOCUMENT_BYTES } from './proposal'
 
 const CID = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'
 const CID_V0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG'
@@ -136,12 +137,8 @@ test('a service failure is retryable and a later retry pins the same draft', asy
   expect(transport.pin).toHaveBeenCalledTimes(2)
 })
 
-test('invalid or mismatched upload results never produce a pinned reference', async () => {
-  for (const receipt of [
-    { cid: '' },
-    { cid: 'not-a-cid' },
-    { cid: CID, size: 1 },
-  ] as IpfsUploadReceipt[]) {
+test('invalid upload results never produce a pinned reference', async () => {
+  for (const receipt of [{ cid: '' }, { cid: 'not-a-cid' }] as IpfsUploadReceipt[]) {
     const { app } = makeApp(async () => receipt)
 
     const result = await app.pinProposalDraft({ token: 'proposer-jwt' })
@@ -167,6 +164,20 @@ test('missing credentials or an incomplete draft do not call the transport', asy
   expect(noBody.status).toBe('invalid-draft')
 
   expect(transport.pin).not.toHaveBeenCalled()
+})
+
+test('a draft too large to be read back is refused before any upload', async () => {
+  const { app, transport } = makeApp()
+  app.updateProposalDraft({ title: 'Club day', markdown: 'a'.repeat(MAX_PROPOSAL_DOCUMENT_BYTES) })
+
+  const result = await app.pinProposalDraft({ token: 'proposer-jwt' })
+
+  expect(result.status).toBe('invalid-draft')
+  expect(transport.pin).not.toHaveBeenCalled()
+
+  // Just under the cap is accepted.
+  app.updateProposalDraft({ markdown: 'a'.repeat(MAX_PROPOSAL_DOCUMENT_BYTES - 1000) })
+  expect((await app.pinProposalDraft({ token: 'proposer-jwt' })).status).not.toBe('invalid-draft')
 })
 
 test('pinning is reported unavailable without a configured transport', async () => {
@@ -313,7 +324,11 @@ test('the transport retrieves bytes from a public gateway by CID', async () => {
   const missing = createPinataIpfsTransport({
     fetch: vi.fn(async () => new Response('not found', { status: 404 })) as unknown as typeof fetch,
   })
-  await expect(missing.retrieve(CID)).rejects.toMatchObject({ reason: 'retrieval-failed' })
+  await expect(missing.retrieve(CID)).rejects.toMatchObject({ reason: 'content-not-found' })
+  const broken = createPinataIpfsTransport({
+    fetch: vi.fn(async () => new Response('oops', { status: 502 })) as unknown as typeof fetch,
+  })
+  await expect(broken.retrieve(CID)).rejects.toMatchObject({ reason: 'retrieval-failed' })
   await expect(transport.retrieve('not-a-cid')).rejects.toMatchObject({
     reason: 'retrieval-failed',
   })

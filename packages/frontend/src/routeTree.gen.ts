@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TestusdRouteImport } from './routes/testusd'
+import { Route as ProposalsIndexRouteImport } from './routes/proposals/index'
 import { Route as ProposalsProposalIdRouteImport } from './routes/proposals/$proposalId'
 import { Route as ProposalsNewRouteImport } from './routes/proposals/new'
 import { Route as TreasuriesIndexRouteImport } from './routes/treasuries/index'
@@ -24,6 +25,11 @@ const IndexRoute = IndexRouteImport.update({
 const TestusdRoute = TestusdRouteImport.update({
   id: '/testusd',
   path: '/testusd',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProposalsIndexRoute = ProposalsIndexRouteImport.update({
+  id: '/proposals/',
+  path: '/proposals/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProposalsProposalIdRoute = ProposalsProposalIdRouteImport.update({
@@ -54,6 +60,7 @@ export interface FileRoutesByFullPath {
   '/proposals/$proposalId': typeof ProposalsProposalIdRoute
   '/proposals/new': typeof ProposalsNewRoute
   '/treasuries/$treasuryAddress': typeof TreasuriesTreasuryAddressRoute
+  '/proposals/': typeof ProposalsIndexRoute
   '/treasuries/': typeof TreasuriesIndexRoute
 }
 export interface FileRoutesByTo {
@@ -62,6 +69,7 @@ export interface FileRoutesByTo {
   '/proposals/$proposalId': typeof ProposalsProposalIdRoute
   '/proposals/new': typeof ProposalsNewRoute
   '/treasuries/$treasuryAddress': typeof TreasuriesTreasuryAddressRoute
+  '/proposals': typeof ProposalsIndexRoute
   '/treasuries': typeof TreasuriesIndexRoute
 }
 export interface FileRoutesById {
@@ -71,6 +79,7 @@ export interface FileRoutesById {
   '/proposals/$proposalId': typeof ProposalsProposalIdRoute
   '/proposals/new': typeof ProposalsNewRoute
   '/treasuries/$treasuryAddress': typeof TreasuriesTreasuryAddressRoute
+  '/proposals/': typeof ProposalsIndexRoute
   '/treasuries/': typeof TreasuriesIndexRoute
 }
 export interface FileRouteTypes {
@@ -81,6 +90,7 @@ export interface FileRouteTypes {
     | '/proposals/$proposalId'
     | '/proposals/new'
     | '/treasuries/$treasuryAddress'
+    | '/proposals/'
     | '/treasuries/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -89,6 +99,7 @@ export interface FileRouteTypes {
     | '/proposals/$proposalId'
     | '/proposals/new'
     | '/treasuries/$treasuryAddress'
+    | '/proposals'
     | '/treasuries'
   id:
     | '__root__'
@@ -97,6 +108,7 @@ export interface FileRouteTypes {
     | '/proposals/$proposalId'
     | '/proposals/new'
     | '/treasuries/$treasuryAddress'
+    | '/proposals/'
     | '/treasuries/'
   fileRoutesById: FileRoutesById
 }
@@ -106,6 +118,7 @@ export interface RootRouteChildren {
   ProposalsProposalIdRoute: typeof ProposalsProposalIdRoute
   ProposalsNewRoute: typeof ProposalsNewRoute
   TreasuriesTreasuryAddressRoute: typeof TreasuriesTreasuryAddressRoute
+  ProposalsIndexRoute: typeof ProposalsIndexRoute
   TreasuriesIndexRoute: typeof TreasuriesIndexRoute
 }
 
@@ -123,6 +136,13 @@ declare module '@tanstack/react-router' {
       path: '/testusd'
       fullPath: '/testusd'
       preLoaderRoute: typeof TestusdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/proposals/': {
+      id: '/proposals/'
+      path: '/proposals'
+      fullPath: '/proposals/'
+      preLoaderRoute: typeof ProposalsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/proposals/$proposalId': {
@@ -162,6 +182,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProposalsProposalIdRoute: ProposalsProposalIdRoute,
   ProposalsNewRoute: ProposalsNewRoute,
   TreasuriesTreasuryAddressRoute: TreasuriesTreasuryAddressRoute,
+  ProposalsIndexRoute: ProposalsIndexRoute,
   TreasuriesIndexRoute: TreasuriesIndexRoute,
 }
 export const routeTree = rootRouteImport

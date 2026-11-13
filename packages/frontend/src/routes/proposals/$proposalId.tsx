@@ -1,67 +1,124 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import type { PublishedProposalResult } from '../../application'
 import { app } from '../../applicationInstance'
-import type { ProposalReadResult, VotingReadResult } from '../../application'
-import { useNetworkState, useWalletState } from '../../walletState'
+import { ReadFailure } from './-ReadFailure'
+import { ProposalVotingPanel } from './-vote'
 
-export const Route = createFileRoute('/proposals/$proposalId')({ component: ProposalVotePage })
+export const Route = createFileRoute('/proposals/$proposalId')({ component: ProposalDetailPage })
 
-function ProposalVotePage() {
+/** `invalid-id` is a page-level state: the URL segment is not a proposal ID at all. */
+type DetailState = PublishedProposalResult | 'loading' | 'invalid-id'
+
+function parseId(value: string): bigint | null {
+  return /^\d+$/.test(value) ? BigInt(value) : null
+}
+
+function ProposalDetailPage() {
   const { proposalId } = Route.useParams()
-  const id = /^\d+$/.test(proposalId) ? BigInt(proposalId) : 0n
-  const [proposal, setProposal] = useState<ProposalReadResult | null>(null)
-  const [voting, setVoting] = useState<VotingReadResult | null>(null)
-  const [token, setToken] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState('')
-  const wallet = useWalletState()
-  const network = useNetworkState()
+  const [state, setState] = useState<DetailState>('loading')
+
+  const load = useCallback(async () => {
+    const id = parseId(proposalId)
+    if (id === null) {
+      setState('invalid-id')
+      return
+    }
+    setState('loading')
+    setState(await app.readPublishedProposal(id))
+  }, [proposalId])
 
   useEffect(() => {
-    let active = true
-    setProposal(null)
-    setVoting(null)
-    setMessage('')
-    void app.readProposal(id).then(value => { if (active) setProposal(value) })
-    void app.readVoting(id).then(value => { if (active) setVoting(value) })
-    return () => { active = false }
-  }, [id])
+    void load()
+  }, [load])
 
-  async function vote() {
-    if (!/^\d+$/.test(token)) { setMessage('Enter a voting NFT token ID.'); return }
-    setBusy(true)
-    setMessage('Waiting for your wallet and chain confirmation…')
-    try {
-      const result = await app.voteYes(id, BigInt(token))
-      if (result.status === 'confirmed') {
-        setMessage(`Yes ballot confirmed: ${result.hash}${result.progress ? '' : '. Progress refresh unavailable; refresh before another vote.'}`)
-        if (result.progress) setVoting({ status: 'success', progress: result.progress })
-      } else setMessage('message' in result ? result.message : 'Wallet and deployment chains must match.')
-    } finally { setBusy(false) }
+  return (
+    <main className="mx-auto min-h-screen max-w-3xl px-4 py-14 text-text-primary sm:px-6 lg:py-20">
+      <Link to="/proposals" className="text-sm font-semibold text-binance-yellow hover:text-binance-yellow-hover">
+        ← Proposals
+      </Link>
+      <Body state={state} proposalId={proposalId} onRetry={() => void load()} />
+      {parseId(proposalId) !== null && (
+        <ProposalVotingPanel key={proposalId} id={parseId(proposalId)!} />
+      )}
+    </main>
+  )
+}
+
+function Body({ state, proposalId, onRetry }: { state: DetailState; proposalId: string; onRetry: () => void }) {
+  if (state === 'loading') {
+    return (
+      <p role="status" className="mt-10 text-text-secondary">
+        Loading proposal #{proposalId}…
+      </p>
+    )
+  }
+  if (state === 'invalid-id') {
+    return (
+      <div role="alert" className="mt-10 rounded-xl border border-card-border bg-card p-6">
+        <p className="font-semibold">&ldquo;{proposalId}&rdquo; is not a valid proposal ID</p>
+        <p className="mt-1 text-sm text-text-secondary">Proposal IDs are whole numbers.</p>
+      </div>
+    )
+  }
+  if (state.status === 'not-found') {
+    return (
+      <div role="alert" className="mt-10 rounded-xl border border-card-border bg-card p-6">
+        <p className="font-semibold">Proposal #{proposalId} does not exist</p>
+        <p className="mt-1 text-sm text-text-secondary">No proposal with that ID is recorded by this DAO.</p>
+      </div>
+    )
+  }
+  if (state.status !== 'success') {
+    return <ReadFailure failure={state} title="The proposal could not be loaded" onRetry={onRetry} />
   }
 
-  return <main className="mx-auto max-w-3xl space-y-5 p-6 text-text-primary">
-    <Link to="/">DAO for Clubs</Link>
-    <h1 className="text-2xl font-bold">Proposal #{proposalId}</h1>
-    {proposal?.status === 'success' ? <section className="space-y-2 break-all rounded-xl border border-card-border p-5">
-      <p>Treasury: {proposal.proposal.treasury}</p>
-      <p>Creator and payout recipient: {proposal.proposal.creator}</p>
-      <p>Request: {proposal.formattedAmount} {proposal.symbol}</p>
-      <p>Voting deadline: {new Date(Number(proposal.proposal.votingDeadline) * 1000).toLocaleString()}</p>
-      <p>Published document: {proposal.proposal.documentReference}</p>
-    </section> : <p>{proposal ? 'Proposal unavailable. Check the ID and configured RPC.' : 'Loading proposal…'}</p>}
-    <section className="space-y-4 rounded-xl border border-card-border p-5">
-      <h2 className="text-lg font-semibold">Public yes vote</h2>
-      {voting?.status === 'success' ? <p>{voting.progress.yesVotes.toString()} yes · current threshold {voting.progress.threshold.toString()} · {voting.progress.outcome}</p> : <p>Voting progress {voting ? 'unavailable' : 'loading'}.</p>}
-      <p>Each treasury NFT votes once per proposal. Administrators control live supply; there is no snapshot. Passing closes voting and does not reserve funds. A ballot is public, not attendance or payment.</p>
-      <label className="block">Voting NFT token ID
-        <input className="ml-3 rounded border border-card-border bg-page p-2" value={token} onChange={event => setToken(event.target.value)} inputMode="numeric" />
-      </label>
-      {wallet.status !== 'connected' ? <button onClick={() => void app.connect()}>Connect holder wallet</button>
-        : network.status !== 'matched' ? <button onClick={() => void app.switchNetwork()}>Switch to deployment network</button>
-        : <button className="rounded bg-binance-yellow px-4 py-2 text-binance-black disabled:opacity-50" disabled={busy || voting?.status !== 'success' || voting.progress.outcome !== 'open'} onClick={() => void vote()}>{busy ? 'Confirming…' : 'Vote yes'}</button>}
-      <button className="ml-4" disabled={busy} onClick={() => void app.readVoting(id).then(setVoting)}>Refresh chain result</button>
-      {message && <p role="status" className="break-all">{message}</p>}
-    </section>
-  </main>
+  const { proposal, document } = state
+  const deadline = new Date(Number(proposal.votingDeadline) * 1000).toLocaleString()
+  return (
+    <article className="mt-6">
+      <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
+        {document.status === 'available' ? document.title : `Proposal #${proposal.id.toString()}`}
+      </h1>
+
+      <dl className="mt-6 grid gap-3 rounded-xl border border-card-border bg-card p-5 text-sm">
+        <Field label="Deployment" value={`chain ${state.chainId}, DAO ${state.daoAddress}`} mono />
+        <Field label="Proposal ID" value={proposal.id.toString()} />
+        <Field label="Treasury" value={proposal.treasury} mono />
+        <Field label="Creator" value={proposal.creator} mono />
+        <Field label="Funding amount" value={`${state.formattedAmount} ${state.symbol}`} />
+        <Field label="Voting deadline" value={deadline} />
+        <Field label="Document reference" value={proposal.documentReference} mono />
+      </dl>
+
+      {document.status === 'available' ? (
+        <section
+          aria-label="Proposal document"
+          className="mt-8 space-y-3 text-text-secondary [&_a]:text-binance-yellow [&_h1]:text-2xl [&_h1]:font-bold [&_h2]:text-xl [&_h2]:font-bold"
+          // Sanitized by the shared Markdown policy after CID verification.
+          dangerouslySetInnerHTML={{ __html: document.html }}
+        />
+      ) : (
+        <div role="alert" className="mt-8 rounded-xl border border-binance-yellow/30 bg-binance-yellow/10 p-6">
+          <p className="font-semibold text-binance-yellow">The proposal document is unavailable</p>
+          <p className="mt-1 text-sm text-text-secondary">{document.message}</p>
+          <p className="mt-1 text-sm text-text-secondary">The on-chain proposal record above is unaffected.</p>
+          {document.retryable ? (
+            <button type="button" onClick={onRetry} className="mt-4 rounded-lg bg-binance-yellow px-4 py-1.5 text-sm font-semibold text-black">
+              Retry
+            </button>
+          ) : null}
+        </div>
+      )}
+    </article>
+  )
+}
+
+function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div>
+      <dt className="text-xs font-semibold uppercase tracking-wider text-text-secondary">{label}</dt>
+      <dd className={`mt-0.5 break-all ${mono ? 'font-mono' : ''}`}>{value}</dd>
+    </div>
+  )
 }
