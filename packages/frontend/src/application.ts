@@ -72,10 +72,12 @@ import {
   renderProposalMarkdown,
 } from './proposal.js'
 import {
+  type AttendanceEvent,
+  InvalidAttendanceSignatureError,
   attendanceSigningMessage,
-  deriveAttendanceEntry,
-  deriveAttendanceSecret,
+  deriveAttendanceCredential,
   encodeAttendanceQr,
+  isAttendanceProposalId,
 } from './attendance.js'
 import {
   type IpfsCredentials,
@@ -683,9 +685,19 @@ export interface PrepareAttendanceCredentialRequest {
 
 /** Only public fields: never the secret, signature, or attendee address. */
 export type AttendanceCredentialResult =
-  | { status: 'ready'; chainId: number; daoAddress: Address; proposalId: bigint; entry: Hex; qr: string }
-  | { status: 'wallet-not-connected' | 'wallet-unavailable' | 'wallet-rejected' | 'unconfigured' | 'stale-configuration' | 'signing-failed'; message: string }
-  | { status: 'chain-mismatch'; message: string }
+  | ({ status: 'ready'; entry: Hex; qr: string } & AttendanceEvent)
+  | {
+      status:
+        | 'wallet-not-connected'
+        | 'wallet-unavailable'
+        | 'wallet-rejected'
+        | 'unconfigured'
+        | 'chain-mismatch'
+        | 'stale-configuration'
+        | 'invalid-proposal-id'
+        | 'signing-failed'
+      message: string
+    }
 
 export interface ApplicationOptions {
   /** IPFS transport used for proposal pinning; omit to disable pinning. */
@@ -1975,6 +1987,9 @@ export function createApplication(
     async prepareAttendanceCredential(
       request: PrepareAttendanceCredentialRequest
     ): Promise<AttendanceCredentialResult> {
+      if (!isAttendanceProposalId(request.proposalId)) {
+        return { status: 'invalid-proposal-id', message: 'The proposal ID is not a valid unsigned 256-bit number.' }
+      }
       if (!adapter) {
         return { status: 'wallet-unavailable', message: 'No wallet extension is available to sign the attendance message.' }
       }
@@ -1991,33 +2006,31 @@ export function createApplication(
             message: `The wallet is on chain ${error.actualChainId}, but this deployment uses chain ${error.expectedChainId}.`,
           }
         }
-        return { status: 'unconfigured', message: error instanceof Error ? error.message : String(error) }
+        if (error instanceof StaleActionConfigurationError) {
+          return { status: 'stale-configuration', message: error.message }
+        }
+        if (error instanceof DeploymentNotConfiguredError || error instanceof DeploymentNotDeployedError) {
+          return { status: 'unconfigured', message: error.message }
+        }
+        throw error
       }
 
       const { account, chainId, targetAddress } = prepared.context
-      const event = { chainId, daoAddress: targetAddress, proposalId: request.proposalId }
+      const event: AttendanceEvent = { chainId, daoAddress: targetAddress, proposalId: request.proposalId }
       try {
         const signature = await adapter.signMessage(account, attendanceSigningMessage(event))
         prepared.assertValid()
-        if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
-          return { status: 'signing-failed', message: 'The wallet returned an unexpected signature format.' }
-        }
-        const secret = deriveAttendanceSecret(signature, request.proposalId)
-        const entry = deriveAttendanceEntry(request.proposalId, secret)
-        return {
-          status: 'ready',
-          chainId,
-          daoAddress: targetAddress,
-          proposalId: request.proposalId,
-          entry,
-          qr: encodeAttendanceQr({ ...event, entry }),
-        }
+        const { entry } = deriveAttendanceCredential(signature, event.proposalId)
+        return { status: 'ready', ...event, entry, qr: encodeAttendanceQr({ ...event, entry }) }
       } catch (error) {
         if (error instanceof StaleActionConfigurationError) {
           return { status: 'stale-configuration', message: error.message }
         }
-        if (normalizeWalletError(error) instanceof WalletRejectedError) {
+        if (error instanceof WalletRejectedError) {
           return { status: 'wallet-rejected', message: 'The signature request was rejected in your wallet. No attendance QR was created.' }
+        }
+        if (error instanceof InvalidAttendanceSignatureError) {
+          return { status: 'signing-failed', message: error.message }
         }
         return { status: 'signing-failed', message: 'The wallet could not sign the attendance message. Try again.' }
       }

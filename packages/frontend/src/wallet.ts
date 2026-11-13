@@ -211,10 +211,7 @@ export function createBrowserWalletAdapter(): WalletAdapter {
         })
         return signature as Hex
       } catch (err: unknown) {
-        if (err && typeof err === 'object' && 'code' in err && (err as { code: number }).code === 4001) {
-          throw new WalletRejectedError()
-        }
-        throw new WalletConnectError(err instanceof Error ? err.message : String(err))
+        throw normalizeWalletError(err)
       }
     },
 

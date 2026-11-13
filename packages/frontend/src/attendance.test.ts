@@ -1,11 +1,12 @@
-import type { Hex } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test } from 'vitest'
 import {
   ATTENDANCE_MESSAGE_LABEL,
   attendanceSigningMessage,
-  deriveAttendanceEntry,
-  deriveAttendanceSecret,
+  InvalidAttendanceSignatureError,
+  deriveAttendanceCredential,
   encodeAttendanceQr,
+  isAttendanceProposalId,
 } from './attendance'
 
 /**
@@ -25,6 +26,7 @@ const VECTOR = {
     'DAO for Clubs attendance v1\nChain ID: 31337\nDAO: 0x5FbDB2315678afecb367f032d93F642f64180aa3\nProposal ID: 1',
   signature:
     '0xd3cdda5f225fa4b153a6c6a5b47173b568300633d82a6ff334c64d277c9a7cf25d8169f020e7f3550850d16c8ea588032d23ddd33e6f4caa7e0c3c834523037b1b' as const,
+  // Intermediate secret (not exported by the module): kept to document the vector.
   secret: '0xaa66bdf12269f5ac9e972bb035ff03ad5a01398a8886a047fe33b71df9feae02' as const,
   entry: '0x875e44e768dec6589cfd78200bf53ff8d24e9fa1359a676f582b24da8834130e' as const,
 }
@@ -66,19 +68,35 @@ describe('attendance signing message', () => {
   })
 })
 
-describe('attendance secret and entry derivation', () => {
-  test('matches the frozen vectors', () => {
-    const secret = deriveAttendanceSecret(VECTOR.signature, VECTOR.proposalId)
-    expect(secret).toBe(VECTOR.secret)
-    expect(deriveAttendanceEntry(VECTOR.proposalId, secret)).toBe(VECTOR.entry)
+describe('attendance credential derivation', () => {
+  test('signs the frozen message bytes to the frozen signature and entry vector', async () => {
+    // Hardhat account #0, EIP-191 over the exact message bytes.
+    const signer = privateKeyToAccount('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80')
+    expect(await signer.signMessage({ message: VECTOR.message })).toBe(VECTOR.signature)
+    expect(deriveAttendanceCredential(VECTOR.signature, VECTOR.proposalId)).toEqual({ entry: VECTOR.entry })
   })
 
-  test('is stable for the same signature and differs for other signature bytes or proposals', () => {
-    const flipped = `${VECTOR.signature.slice(0, -2)}1c` as Hex
-    const same = deriveAttendanceSecret(VECTOR.signature, VECTOR.proposalId)
-    expect(deriveAttendanceSecret(VECTOR.signature, VECTOR.proposalId)).toBe(same)
-    expect(deriveAttendanceSecret(flipped, VECTOR.proposalId)).not.toBe(same)
-    expect(deriveAttendanceSecret(VECTOR.signature, 2n)).not.toBe(same)
+  test('is stable for the same signature and differs for another signer or proposal', async () => {
+    // Hardhat account #1 signing the same message gives a genuinely different signature.
+    const other = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d')
+    const otherSignature = await other.signMessage({ message: VECTOR.message })
+    expect(otherSignature).not.toBe(VECTOR.signature)
+    const same = deriveAttendanceCredential(VECTOR.signature, VECTOR.proposalId).entry
+    expect(deriveAttendanceCredential(VECTOR.signature, VECTOR.proposalId).entry).toBe(same)
+    expect(deriveAttendanceCredential(otherSignature, VECTOR.proposalId).entry).not.toBe(same)
+    expect(deriveAttendanceCredential(VECTOR.signature, 2n).entry).not.toBe(same)
+  })
+
+  test('does not expose the secret and rejects malformed signatures', () => {
+    expect(JSON.stringify(deriveAttendanceCredential(VECTOR.signature, 1n))).not.toContain(VECTOR.secret.slice(2))
+    expect(() => deriveAttendanceCredential('0x1234', 1n)).toThrow(InvalidAttendanceSignatureError)
+  })
+
+  test('accepts only uint256 proposal IDs', () => {
+    expect(isAttendanceProposalId(0n)).toBe(true)
+    expect(isAttendanceProposalId(2n ** 256n - 1n)).toBe(true)
+    expect(isAttendanceProposalId(-1n)).toBe(false)
+    expect(isAttendanceProposalId(2n ** 256n)).toBe(false)
   })
 })
 

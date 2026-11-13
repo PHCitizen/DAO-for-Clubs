@@ -1,4 +1,4 @@
-import { encodeAbiParameters, getAddress, sha256, type Hex } from 'viem'
+import { encodeAbiParameters, getAddress, sha256, type Address, type Hex } from 'viem'
 
 /**
  * Event attendance credential derivation (spec 06, version 1).
@@ -17,7 +17,7 @@ export const ATTENDANCE_QR_VERSION = 1
 
 export interface AttendanceEvent {
   chainId: number
-  daoAddress: string
+  daoAddress: Address
   proposalId: bigint
 }
 
@@ -30,21 +30,35 @@ export function attendanceSigningMessage(event: AttendanceEvent): string {
   ].join('\n')
 }
 
-export function deriveAttendanceSecret(signature: Hex, proposalId: bigint): Hex {
-  return sha256(
-    encodeAbiParameters(
-      [{ type: 'bytes' }, { type: 'uint256' }],
-      [signature, proposalId]
-    ),
-    'hex'
-  )
+const MAX_UINT256 = 2n ** 256n - 1n
+
+/** True when the proposal ID fits the uint256 used in the ABI encodings. */
+export function isAttendanceProposalId(proposalId: bigint): boolean {
+  return proposalId >= 0n && proposalId <= MAX_UINT256
 }
 
-export function deriveAttendanceEntry(proposalId: bigint, secret: Hex): Hex {
-  return sha256(
+/** Thrown when the wallet's signature is not the expected 65-byte hex value. */
+export class InvalidAttendanceSignatureError extends Error {
+  constructor() {
+    super('The wallet returned an unexpected signature format.')
+  }
+}
+
+/**
+ * Derives the public QR entry from the wallet signature. The intermediate
+ * secret is computed and discarded here so it cannot leave this module.
+ */
+export function deriveAttendanceCredential(signature: Hex, proposalId: bigint): { entry: Hex } {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) throw new InvalidAttendanceSignatureError()
+  const secret = sha256(
+    encodeAbiParameters([{ type: 'bytes' }, { type: 'uint256' }], [signature, proposalId]),
+    'hex'
+  )
+  const entry = sha256(
     encodeAbiParameters([{ type: 'uint256' }, { type: 'bytes32' }], [proposalId, secret]),
     'hex'
   )
+  return { entry }
 }
 
 export function encodeAttendanceQr(event: AttendanceEvent & { entry: Hex }): string {

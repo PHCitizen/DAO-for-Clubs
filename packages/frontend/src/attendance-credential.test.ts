@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { privateKeyToAccount } from 'viem/accounts'
 import { createApplication } from './application'
+import { WalletRejectedError } from './wallet'
 import type { RpcAdapter } from './rpc'
 import { type AccountChangedListener, type ChainChangedListener, type WalletAdapter } from './wallet'
 
@@ -8,6 +9,7 @@ const DAO = '0x5FbDB2315678afecb367f032d93F642f64180aa3' as const
 const OTHER_DAO = '0x00000000000000000000000000000000000000d1' as const
 // Hardhat account #0: RFC 6979 signing makes personal_sign reproducible.
 const SIGNER = privateKeyToAccount('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80')
+const OTHER_SIGNER = privateKeyToAccount('0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d')
 const SIGNATURE =
   '0xd3cdda5f225fa4b153a6c6a5b47173b568300633d82a6ff334c64d277c9a7cf25d8169f020e7f3550850d16c8ea588032d23ddd33e6f4caa7e0c3c834523037b1b'
 const SECRET = 'aa66bdf12269f5ac9e972bb035ff03ad5a01398a8886a047fe33b71df9feae02'
@@ -108,16 +110,17 @@ test('signing again with the same account recovers the same entry; other events 
 })
 
 test('different signing output does not recover the same entry', async () => {
-  const { app } = setup({ sign: async () => `${SIGNATURE.slice(0, -2)}1c` as `0x${string}` })
+  const { app } = setup({ sign: (_account, message) => OTHER_SIGNER.signMessage({ message }) })
   await app.connect()
   const result = await app.prepareAttendanceCredential({ proposalId: 1n })
+  expect(result.status).toBe('ready')
   expect(result.status === 'ready' && result.entry).not.toBe(ENTRY)
 })
 
 test('wallet rejection yields no credential', async () => {
   const { app } = setup({
     sign: async () => {
-      throw Object.assign(new Error('User rejected'), { code: 4001 })
+      throw new WalletRejectedError()
     },
   })
   await app.connect()
@@ -127,7 +130,7 @@ test('wallet rejection yields no credential', async () => {
 })
 
 test('signing failures are reported without a credential or any logging', async () => {
-  const spies = (['log', 'error', 'warn'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}))
+  const spies = (['log', 'info', 'debug', 'error', 'warn'] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}))
   const failing = setup({ sign: async () => { throw new Error('wallet crashed') } })
   await failing.app.connect()
   const failed = await failing.app.prepareAttendanceCredential({ proposalId: 1n })
@@ -138,6 +141,15 @@ test('signing failures are reported without a credential or any logging', async 
   await ok.app.connect()
   await ok.app.prepareAttendanceCredential({ proposalId: 1n })
   for (const spy of spies) expect(spy).not.toHaveBeenCalled()
+})
+
+test('an invalid proposal ID is refused before the wallet is asked to sign', async () => {
+  const { app, signMessage } = setup()
+  await app.connect()
+  for (const proposalId of [-1n, 2n ** 256n]) {
+    expect((await app.prepareAttendanceCredential({ proposalId })).status).toBe('invalid-proposal-id')
+  }
+  expect(signMessage).not.toHaveBeenCalled()
 })
 
 test('a malformed signature is not turned into a credential', async () => {

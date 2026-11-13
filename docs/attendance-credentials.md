@@ -27,8 +27,9 @@ Implementation: `packages/frontend/src/attendance.ts`; action
 ## Recovery limits
 
 Recovery means the same account and signing method reproduce the same
-signature. ECDSA wallets using RFC 6979 deterministic nonces (for example
-MetaMask externally owned accounts) do. It is not guaranteed for wallets with
+signature. ECDSA wallets using RFC 6979 deterministic nonces should do, but
+this is NOT verified here against any real wallet (MetaMask included); only the
+local-key vector in the automated tests is verified. Recovery is not guaranteed for wallets with
 randomized signatures, smart-contract or multisig accounts, hardware wallets
 whose firmware differs, or after an account migration. A different signature
 yields a different, unrelated entry.
@@ -36,7 +37,8 @@ yields a different, unrelated entry.
 ## Real-wallet smoke check (manual)
 
 Automated tests use a deterministic local key (Hardhat account #0) as the
-signing vector. To confirm a real wallet:
+signing vector and a fake EIP-1193 provider for the browser adapter. No real
+wallet has been tested. To confirm one, run this manual check (untested):
 
 1. Run the app with a deployment configured and connect MetaMask (EOA) on the
    deployment chain.
@@ -44,5 +46,4 @@ signing vector. To confirm a real wallet:
 3. Disconnect, reload, reconnect the same account, prepare again: the entry must
    be identical. Switching to another account must produce a different entry.
 
-Status: not executed in the automated environment (no browser wallet
-available); the procedure above is the documented check.
+Status: NOT executed. Until someone runs it, wallet recovery is unconfirmed.
