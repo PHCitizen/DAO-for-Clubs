@@ -11,6 +11,7 @@ import {
   isValidCid,
   parseIpfsReference,
 } from './ipfs'
+import { MAX_PROPOSAL_DOCUMENT_BYTES } from './proposal'
 
 const CID = 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi'
 const CID_V0 = 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG'
@@ -167,6 +168,20 @@ test('missing credentials or an incomplete draft do not call the transport', asy
   expect(noBody.status).toBe('invalid-draft')
 
   expect(transport.pin).not.toHaveBeenCalled()
+})
+
+test('a draft too large to be read back is refused before any upload', async () => {
+  const { app, transport } = makeApp()
+  app.updateProposalDraft({ title: 'Club day', markdown: 'a'.repeat(MAX_PROPOSAL_DOCUMENT_BYTES) })
+
+  const result = await app.pinProposalDraft({ token: 'proposer-jwt' })
+
+  expect(result.status).toBe('invalid-draft')
+  expect(transport.pin).not.toHaveBeenCalled()
+
+  // Just under the cap is accepted.
+  app.updateProposalDraft({ markdown: 'a'.repeat(MAX_PROPOSAL_DOCUMENT_BYTES - 1000) })
+  expect((await app.pinProposalDraft({ token: 'proposer-jwt' })).status).not.toBe('invalid-draft')
 })
 
 test('pinning is reported unavailable without a configured transport', async () => {

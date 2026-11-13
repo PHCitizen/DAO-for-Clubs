@@ -2,10 +2,12 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
 import type { PublishedProposalResult } from '../../application'
 import { app } from '../../applicationInstance'
+import { ReadFailure } from './-ReadFailure'
 
 export const Route = createFileRoute('/proposals/$proposalId')({ component: ProposalDetailPage })
 
-type DetailState = PublishedProposalResult | 'loading'
+/** `invalid-id` is a page-level state: the URL segment is not a proposal ID at all. */
+type DetailState = PublishedProposalResult | 'loading' | 'invalid-id'
 
 function parseId(value: string): bigint | null {
   return /^\d+$/.test(value) ? BigInt(value) : null
@@ -18,7 +20,7 @@ function ProposalDetailPage() {
   const load = useCallback(async () => {
     const id = parseId(proposalId)
     if (id === null) {
-      setState({ status: 'not-found', id: 0n })
+      setState('invalid-id')
       return
     }
     setState('loading')
@@ -47,6 +49,14 @@ function Body({ state, proposalId, onRetry }: { state: DetailState; proposalId: 
       </p>
     )
   }
+  if (state === 'invalid-id') {
+    return (
+      <div role="alert" className="mt-10 rounded-xl border border-card-border bg-card p-6">
+        <p className="font-semibold">&ldquo;{proposalId}&rdquo; is not a valid proposal ID</p>
+        <p className="mt-1 text-sm text-text-secondary">Proposal IDs are whole numbers.</p>
+      </div>
+    )
+  }
   if (state.status === 'not-found') {
     return (
       <div role="alert" className="mt-10 rounded-xl border border-card-border bg-card p-6">
@@ -56,19 +66,7 @@ function Body({ state, proposalId, onRetry }: { state: DetailState; proposalId: 
     )
   }
   if (state.status !== 'success') {
-    const message =
-      state.status === 'chain-mismatch'
-        ? `This deployment requires chain ${state.expectedChainId}, but the RPC endpoint reported chain ${state.actualChainId}.`
-        : state.message
-    return (
-      <div role="alert" className="mt-10 rounded-xl border border-status-error/30 bg-status-error/10 p-6">
-        <p className="font-semibold text-status-error">The proposal could not be loaded</p>
-        <p className="mt-1 text-sm text-text-secondary">{message}</p>
-        <button type="button" onClick={onRetry} className="mt-4 rounded-lg bg-status-error px-4 py-1.5 text-sm font-semibold text-white">
-          Try again
-        </button>
-      </div>
-    )
+    return <ReadFailure failure={state} title="The proposal could not be loaded" onRetry={onRetry} />
   }
 
   const { proposal, document } = state
@@ -91,14 +89,14 @@ function Body({ state, proposalId, onRetry }: { state: DetailState; proposalId: 
 
       {document.status === 'available' ? (
         <section
-          aria-label="Event information"
+          aria-label="Proposal document"
           className="mt-8 space-y-3 text-text-secondary [&_a]:text-binance-yellow [&_h1]:text-2xl [&_h1]:font-bold [&_h2]:text-xl [&_h2]:font-bold"
           // Sanitized by the shared Markdown policy after CID verification.
           dangerouslySetInnerHTML={{ __html: document.html }}
         />
       ) : (
         <div role="alert" className="mt-8 rounded-xl border border-binance-yellow/30 bg-binance-yellow/10 p-6">
-          <p className="font-semibold text-binance-yellow">Event information is unavailable</p>
+          <p className="font-semibold text-binance-yellow">The proposal document is unavailable</p>
           <p className="mt-1 text-sm text-text-secondary">{document.message}</p>
           <p className="mt-1 text-sm text-text-secondary">The on-chain proposal record above is unaffected.</p>
           {document.retryable ? (

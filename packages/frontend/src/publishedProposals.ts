@@ -13,8 +13,12 @@ import { decodeProposalDocument, ProposalDocumentError, renderProposalMarkdown }
 // A failure here describes the document only; it never alters the record.
 
 export type PublishedDocumentFailure =
-  /** The recorded reference is not an ipfs:// reference this client can verify. */
+  /** The recorded reference is not a well-formed ipfs:// reference. */
   | 'invalid-reference'
+  /** Well-formed, but uses a codec/hash/size this client cannot content-verify. */
+  | 'unverifiable-reference'
+  /** This client has no IPFS retrieval configured; retrying cannot help. */
+  | 'transport-unconfigured'
   /** The gateway answered that no content exists for the CID. */
   | 'unavailable'
   /** The gateway could not be reached or answered with an error. */
@@ -62,9 +66,9 @@ export async function readPublishedDocument(
   }
   if (!ipfs) {
     return failure(
-      'transport-failure',
+      'transport-unconfigured',
       'This client has no IPFS retrieval configured, so the document could not be fetched.',
-      true
+      false
     )
   }
 
@@ -96,8 +100,8 @@ export async function readPublishedDocument(
   }
   if (verification.status === 'unverifiable') {
     return failure(
-      'invalid-reference',
-      'The recorded document reference uses an identifier format this client cannot verify.',
+      'unverifiable-reference',
+      'The recorded document reference uses an identifier format or size this client cannot verify.',
       false
     )
   }

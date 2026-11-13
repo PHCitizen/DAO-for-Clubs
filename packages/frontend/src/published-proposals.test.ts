@@ -3,7 +3,7 @@ import { expect, test, vi } from 'vitest'
 import { getAddress, type Address } from 'viem'
 import { createApplication } from './application'
 import { IpfsTransportError, type IpfsTransport } from './ipfs'
-import { encodeProposalDocument } from './proposal'
+import { encodeProposalDocument, MAX_PROPOSAL_DOCUMENT_BYTES } from './proposal'
 import type { RpcAdapter } from './rpc'
 
 const DAO = '0x00000000000000000000000000000000000000d1' as Address
@@ -16,8 +16,11 @@ const DEADLINE = 1_900_000_000n
 
 // Independent CIDv1 (raw codec, sha2-256) construction used to publish bytes.
 function rawCidFor(bytes: Uint8Array): string {
-  const digest = createHash('sha256').update(bytes).digest()
-  const cid = Buffer.concat([Buffer.from([0x01, 0x55, 0x12, 0x20]), digest])
+  return cidV1(0x55, createHash('sha256').update(bytes).digest())
+}
+
+function cidV1(codec: number, digest: Uint8Array): string {
+  const cid = Buffer.concat([Buffer.from([0x01, codec, 0x12, 0x20]), digest])
   const alphabet = 'abcdefghijklmnopqrstuvwxyz234567'
   let bits = 0
   let buffer = 0
@@ -69,6 +72,8 @@ function record(id: bigint, treasury: Address, creator: Address, reference: stri
 function makeReader(options: { rpcDown?: boolean } = {}) {
   const proposals = new Map<bigint, ProposalRecord>()
   const content = new Map<string, Uint8Array>()
+  // Scripted proposalCount answers; the last one repeats.
+  let countQueue: bigint[] = []
   const retrieval = {
     failure: null as IpfsTransportError | null,
     calls: [] as string[],
@@ -87,7 +92,7 @@ function makeReader(options: { rpcDown?: boolean } = {}) {
         case 'symbol':
           return 'TUSD'
         case 'proposalCount':
-          return BigInt(proposals.size)
+          return countQueue.length > 1 ? countQueue.shift()! : (countQueue[0] ?? BigInt(proposals.size))
         case 'getProposal': {
           const found = proposals.get(request.args![0] as bigint)
           if (!found) throw new Error('ProposalNotFound')
@@ -117,7 +122,7 @@ function makeReader(options: { rpcDown?: boolean } = {}) {
     testUsdAddress: TEST_USD,
   }, { ipfs })
 
-  return { app, proposals, content, retrieval }
+  return { app, rpc, proposals, content, retrieval, countReads: (counts: bigint[]) => { countQueue = [...counts] } }
 }
 
 function addDocument(
@@ -157,6 +162,7 @@ test('a wallet-free reader discovers proposals across treasuries, newest first',
     symbol: 'TUSD',
   })
   expect(result.proposals[1]!.proposal.documentReference).toBe(refA)
+  expect(result.gaps).toEqual([])
   // Discovery is on-chain record only; documents are fetched on demand.
   expect(state.retrieval.calls).toEqual([])
 })
@@ -302,6 +308,104 @@ test('a recorded reference that is not a verifiable ipfs reference is reported',
     document: { status: 'invalid-reference', retryable: false },
   })
   expect(state.retrieval.calls).toEqual([])
+})
+
+test('a well-formed but unverifiable reference is distinct from a malformed one', async () => {
+  const state = makeReader()
+  // CIDv1 with the dag-cbor codec (0x71): valid shape, but not recomputable here.
+  const unsupported = `ipfs://${cidV1(0x71, new Uint8Array(32))}`
+  state.proposals.set(1n, record(1n, TREASURY_A, CREATOR_1, unsupported))
+  state.content.set(unsupported.slice('ipfs://'.length), new TextEncoder().encode('{}'))
+
+  expect(await state.app.readPublishedProposal(1n)).toMatchObject({
+    status: 'success',
+    document: { status: 'unverifiable-reference', retryable: false },
+  })
+})
+
+test('a client without IPFS retrieval reports a non-retryable document failure', async () => {
+  const state = makeReader()
+  const reference = addDocument(state, 1n, TREASURY_A, CREATOR_1, { title: 'Club day', markdown: 'x' })
+  const noIpfs = createApplication(undefined, state.rpc, {
+    chainId: 31337,
+    daoAddress: DAO,
+    testUsdAddress: TEST_USD,
+  })
+
+  expect(await noIpfs.readPublishedProposal(1n)).toMatchObject({
+    status: 'success',
+    proposal: { id: 1n, documentReference: reference },
+    document: { status: 'transport-unconfigured', retryable: false },
+  })
+})
+
+test('oversized published documents are reported as invalid, not silently truncated', async () => {
+  const state = makeReader()
+  const big = new TextEncoder().encode(
+    JSON.stringify({ version: 1, title: 'Big', markdown: 'a'.repeat(MAX_PROPOSAL_DOCUMENT_BYTES) })
+  )
+  state.proposals.set(1n, record(1n, TREASURY_A, CREATOR_1, publish(state.content, big)))
+
+  expect(await state.app.readPublishedProposal(1n)).toMatchObject({
+    document: { status: 'invalid-document', retryable: false },
+  })
+})
+
+test('listing surfaces records that disappear mid-read instead of hiding them', async () => {
+  const state = makeReader()
+  addDocument(state, 1n, TREASURY_A, CREATOR_1, { title: 'One', markdown: 'x' })
+  // An inconsistent node: the first count read says 3, later reads say 1,
+  // so records 3 and 2 resolve to nothing.
+  state.countReads([3n, 1n])
+
+  const result = await state.app.listProposals()
+
+  expect(result).toMatchObject({ status: 'success' })
+  if (result.status !== 'success') return
+  expect(result.proposals.map((p) => p.proposal.id)).toEqual([1n])
+  expect(result.gaps).toEqual([3n, 2n])
+})
+
+test('listing reads records in bounded batches', async () => {
+  const state = makeReader()
+  for (let id = 1n; id <= 25n; id += 1n) {
+    addDocument(state, id, TREASURY_A, CREATOR_1, { title: `P${id}`, markdown: 'x' })
+  }
+  let inFlight = 0
+  let peak = 0
+  const original = state.rpc.readContract!
+  state.rpc.readContract = (async (request: { functionName: string }) => {
+    if (request.functionName !== 'getProposal') return original(request as never)
+    inFlight += 1
+    peak = Math.max(peak, inFlight)
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    inFlight -= 1
+    return original(request as never)
+  }) as typeof original
+
+  const result = await state.app.listProposals()
+
+  expect(result).toMatchObject({ status: 'success' })
+  if (result.status === 'success') expect(result.proposals).toHaveLength(25)
+  expect(peak).toBeLessThanOrEqual(10)
+})
+
+// Each case lists patterns that must not appear in the rendered HTML. Escaped
+// text such as `&lt;img onerror=...&gt;` is inert, so only live markup counts.
+test.each([
+  ['event-handler attributes', '<img src=x onerror=alert(1)>\n\n<a href="/" onclick="x()">t</a>', [/<img/, /<a /, /<[^>]*\sonerror=/, /<[^>]*\sonclick=/]],
+  ['inline SVG', '<svg onload=alert(1)><script>alert(2)</script></svg>', [/<svg/, /<script/]],
+  ['entity-encoded schemes', '[a](jav&#x61;script:alert(1)) [b](&#106;avascript:alert(1)) [c](javascript&colon;alert(1))', [/href="javascript/i, /href="[^"]*&(?!amp;)/]],
+  ['whitespace and data/vbscript schemes', '[a](java\tscript:alert(1)) [b](vbscript:x) [c](data:text/html;base64,PHNjcmlwdD4=)', [/href=/]],
+  ['script and svg image sources', '![x](javascript:alert(1)) ![y](data:image/svg+xml,<svg onload=alert(1)>)', [/<img/]],
+])('published view neutralizes %s', async (_name, markdown, forbidden) => {
+  const state = makeReader()
+  addDocument(state, 1n, TREASURY_A, CREATOR_1, { title: 'Evil', markdown })
+
+  const result = await state.app.readPublishedProposal(1n)
+
+  if (result.status !== 'success' || result.document.status !== 'available') throw new Error('expected document')
+  for (const pattern of forbidden) expect(result.document.html).not.toMatch(pattern)
 })
 
 test('chain read failures are distinct from document failures', async () => {

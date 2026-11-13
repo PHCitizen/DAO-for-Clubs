@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
 import type { ProposalListResult } from '../../application'
 import { app } from '../../applicationInstance'
+import { ReadFailure } from './-ReadFailure'
 
 export const Route = createFileRoute('/proposals/')({ component: ProposalListPage })
 
@@ -46,23 +47,7 @@ function Body({ state, onRetry }: { state: ListState; onRetry: () => void }) {
     )
   }
   if (state.status !== 'success') {
-    const message =
-      state.status === 'chain-mismatch'
-        ? `This deployment requires chain ${state.expectedChainId}, but the RPC endpoint reported chain ${state.actualChainId}.`
-        : state.message
-    return (
-      <div role="alert" className="mt-10 rounded-xl border border-status-error/30 bg-status-error/10 p-6">
-        <p className="font-semibold text-status-error">Proposals could not be loaded</p>
-        <p className="mt-1 text-sm text-text-secondary">{message}</p>
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-4 rounded-lg bg-status-error px-4 py-1.5 text-sm font-semibold text-white"
-        >
-          Try again
-        </button>
-      </div>
-    )
+    return <ReadFailure failure={state} title="Proposals could not be loaded" onRetry={onRetry} />
   }
   if (state.proposals.length === 0) {
     return (
@@ -72,6 +57,12 @@ function Body({ state, onRetry }: { state: ListState; onRetry: () => void }) {
     )
   }
   return (
+    <>
+      {state.gaps.length > 0 ? (
+        <div role="alert" className="mt-10 rounded-xl border border-binance-yellow/30 bg-binance-yellow/10 p-4 text-sm text-text-secondary">
+          Could not read proposal {state.gaps.map((id) => `#${id.toString()}`).join(', ')}. The list may be incomplete.
+        </div>
+      ) : null}
     <ul className="mt-10 space-y-3">
       {state.proposals.map(({ proposal, formattedAmount, symbol }) => (
         <li key={proposal.id.toString()}>
@@ -89,5 +80,6 @@ function Body({ state, onRetry }: { state: ListState; onRetry: () => void }) {
         </li>
       ))}
     </ul>
+    </>
   )
 }

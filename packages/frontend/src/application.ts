@@ -67,6 +67,7 @@ import {
   type ProposalDocument,
   PROPOSAL_DOCUMENT_VERSION,
   encodeProposalDocument,
+  proposalDocumentSizeProblem,
   renderProposalMarkdown,
 } from './proposal.js'
 import {
@@ -720,23 +721,21 @@ export type CreateProposalResult =
   | { status: 'rejected'; message: string }
   | { status: 'failed'; message: string; retryable: true }
 
-export type ProposalReadResult =
-  | {
-      status: 'success'
-      chainId: number
-      proposal: ProposalTerms
-      formattedAmount: string
-      symbol: string
-      decimals: number
-    }
-  | { status: 'not-found'; id: bigint }
-  | TreasuryReadFailure
-
+/** An on-chain proposal record with its funding amount in display form. */
 export interface ProposalSummary {
   proposal: ProposalTerms
   formattedAmount: string
   symbol: string
 }
+
+export type ProposalReadResult =
+  | ({
+      status: 'success'
+      chainId: number
+      decimals: number
+    } & ProposalSummary)
+  | { status: 'not-found'; id: bigint }
+  | TreasuryReadFailure
 
 export type ProposalListResult =
   | {
@@ -745,26 +744,47 @@ export type ProposalListResult =
       daoAddress: Address
       /** Newest (highest global ID) first. */
       proposals: ProposalSummary[]
+      /** IDs within the DAO's count whose record could not be read (surfaced, never hidden). */
+      gaps: bigint[]
     }
   | TreasuryReadFailure
 
 export type PublishedProposalResult =
-  | {
+  | ({
       status: 'success'
       chainId: number
       daoAddress: Address
-      /** The on-chain record, present regardless of the document's state. */
-      proposal: ProposalTerms
-      formattedAmount: string
-      symbol: string
+      /** The on-chain record (in `proposal`), present regardless of the document's state. */
       document: PublishedDocumentState
-    }
+    } & ProposalSummary)
   | { status: 'not-found'; id: bigint }
   | TreasuryReadFailure
 
 export type ProposalCountResult =
   | { status: 'success'; chainId: number; count: bigint }
   | TreasuryReadFailure
+
+/** Number of proposal records fetched at once when listing (keeps RPC load bounded). */
+const PROPOSAL_LIST_BATCH_SIZE = 10
+
+async function readProposalTokenFormat(
+  chain: ProposalChain,
+  config: ProposalConfig
+): Promise<{ decimals: number; symbol: string }> {
+  const [decimals, symbol] = await Promise.all([
+    chain.readContract<number>({
+      address: config.testUsdAddress,
+      abi: config.testUsdAbi,
+      functionName: 'decimals',
+    }),
+    chain.readContract<string>({
+      address: config.testUsdAddress,
+      abi: config.testUsdAbi,
+      functionName: 'symbol',
+    }),
+  ])
+  return { decimals: Number(decimals), symbol }
+}
 
 export function createApplication(
   adapter?: WalletAdapter,
@@ -878,22 +898,6 @@ export function createApplication(
           testUsdAbi: publicAbis.TestUSD,
         }
       : null
-
-  async function readProposalTokenFormat(): Promise<{ decimals: number; symbol: string }> {
-    const [decimals, symbol] = await Promise.all([
-      proposalChain!.readContract<number>({
-        address: proposalConfig!.testUsdAddress,
-        abi: proposalConfig!.testUsdAbi,
-        functionName: 'decimals',
-      }),
-      proposalChain!.readContract<string>({
-        address: proposalConfig!.testUsdAddress,
-        abi: proposalConfig!.testUsdAbi,
-        functionName: 'symbol',
-      }),
-    ])
-    return { decimals: Number(decimals), symbol }
-  }
 
   const proposalChain: ProposalChain | null =
     rpc?.readContract && proposalConfig
@@ -1178,6 +1182,8 @@ export function createApplication(
           message: 'Write the event and funding request before pinning.',
         }
       }
+      const sizeProblem = proposalDocumentSizeProblem(currentProposalDocument())
+      if (sizeProblem !== null) return { status: 'invalid-draft', message: sizeProblem }
 
       // Capture the reviewed bytes now; a later edit must not change what is
       // uploaded or which document the reference describes.
@@ -1379,25 +1385,14 @@ export function createApplication(
       try {
         const proposal = await readProposalTerms(proposalChain, proposalConfig, id)
         if (proposal === null) return { status: 'not-found', id }
-        const [decimals, symbol] = await Promise.all([
-          proposalChain.readContract<number>({
-            address: proposalConfig.testUsdAddress,
-            abi: proposalConfig.testUsdAbi,
-            functionName: 'decimals',
-          }),
-          proposalChain.readContract<string>({
-            address: proposalConfig.testUsdAddress,
-            abi: proposalConfig.testUsdAbi,
-            functionName: 'symbol',
-          }),
-        ])
-        const tokenDecimals = Number(decimals)
+        const token = await readProposalTokenFormat(proposalChain, proposalConfig)
+        const tokenDecimals = token.decimals
         return {
           status: 'success',
           chainId: proposalConfig.chainId,
           proposal,
           formattedAmount: formatUnits(proposal.amount, tokenDecimals),
-          symbol,
+          symbol: token.symbol,
           decimals: tokenDecimals,
         }
       } catch (error) {
@@ -1417,24 +1412,32 @@ export function createApplication(
         const count = await readProposalCount(proposalChain, proposalConfig)
         const ids: bigint[] = []
         for (let id = count; id >= 1n; id -= 1n) ids.push(id)
-        const records = await Promise.all(
-          ids.map((id) => readProposalTerms(proposalChain, proposalConfig, id))
-        )
-        const token = await readProposalTokenFormat()
+        // Bounded concurrency: a large DAO must not trigger one RPC burst per proposal.
+        const records: (ProposalTerms | null)[] = []
+        for (let start = 0; start < ids.length; start += PROPOSAL_LIST_BATCH_SIZE) {
+          const batch = ids.slice(start, start + PROPOSAL_LIST_BATCH_SIZE)
+          records.push(...(await Promise.all(batch.map((id) => readProposalTerms(proposalChain, proposalConfig, id)))))
+        }
+        const token = await readProposalTokenFormat(proposalChain, proposalConfig)
         const proposals: ProposalSummary[] = []
-        for (const proposal of records) {
-          if (proposal === null) continue
+        const gaps: bigint[] = []
+        records.forEach((proposal, index) => {
+          if (proposal === null) {
+            gaps.push(ids[index]!)
+            return
+          }
           proposals.push({
             proposal,
             formattedAmount: formatUnits(proposal.amount, token.decimals),
             symbol: token.symbol,
           })
-        }
+        })
         return {
           status: 'success',
           chainId: proposalConfig.chainId,
           daoAddress: proposalConfig.daoAddress,
           proposals,
+          gaps,
         }
       } catch (error) {
         return toProposalReadFailure(error)
@@ -1450,10 +1453,13 @@ export function createApplication(
     async readPublishedProposal(id: bigint): Promise<PublishedProposalResult> {
       const record = await this.readProposal(id)
       if (record.status !== 'success') return record
+      if (!proposalConfig) {
+        return { status: 'unconfigured', message: 'Proposal reads require a configured DAO deployment and RPC endpoint.' }
+      }
       return {
         status: 'success',
         chainId: record.chainId,
-        daoAddress: proposalConfig!.daoAddress,
+        daoAddress: proposalConfig.daoAddress,
         proposal: record.proposal,
         formattedAmount: record.formattedAmount,
         symbol: record.symbol,

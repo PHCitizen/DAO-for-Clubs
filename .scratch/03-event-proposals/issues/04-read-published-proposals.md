@@ -33,3 +33,10 @@ Show proposal information, not an independently implemented voting engine. Publi
 **Tests:** `published-proposals.test.ts` and `ipfsContent.test.ts` (application seam; CID vectors from the known `ipfs add` result and an independent hash), and `packages/contracts/test/published-proposals.test.ts` (real local EVM, several treasuries, no wallet, unavailable/mismatch/malformed/gateway-down and recovery). `pnpm check` and `pnpm typecheck` pass.
 
 **Notes:** Voting results/thresholds are intentionally not shown. Documents above one 256 KiB chunk cannot be verified by this client.
+
+### Review fixes — 2026-11-13
+
+- Document failures now distinguish `invalid-reference` (malformed), `unverifiable-reference` (unsupported codec or larger than one chunk), and `transport-unconfigured` (non-retryable).
+- Authoring refuses documents over `MAX_PROPOSAL_DOCUMENT_BYTES` (256 KiB, tied to the verifier's single-chunk limit) with `invalid-draft`; the decoder enforces the same limit.
+- `listProposals()` returns `gaps` (IDs whose record could not be read) and reads in batches of 10.
+- Route copy uses "proposal document"; shared `-ReadFailure.tsx`; non-numeric URL IDs are an `invalid-id` page state.

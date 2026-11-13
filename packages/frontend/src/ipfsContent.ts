@@ -19,7 +19,15 @@ const BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567'
 const SHA2_256 = 0x12
 const CODEC_RAW = 0x55
 const CODEC_DAG_PB = 0x70
-const MAX_SINGLE_CHUNK_BYTES = 262_144
+/** Default UnixFS chunk size (256 KiB); larger files become multi-block DAGs. */
+export const MAX_SINGLE_CHUNK_BYTES = 262_144
+const CIDV1_VERSION = 1
+const SHA2_256_DIGEST_BYTES = 32
+/** CIDv0 is a bare 34-byte multihash: 0x12 0x20 + 32-byte digest. */
+const CIDV0_MULTIHASH_BYTES = 34
+/** CIDv1 binary: version, codec, 0x12, 0x20, 32-byte digest (single-byte codec). */
+const CIDV1_BINARY_BYTES = 36
+/** Multibase prefix 'b' marks base32 lowercase, the default CIDv1 text form. */
 
 interface ParsedCid {
   codec: number
@@ -62,16 +70,15 @@ function decodeBase32(value: string): Uint8Array | null {
 function parseCid(cid: string): ParsedCid | null {
   if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(cid)) {
     const multihash = decodeBase58(cid)
-    if (!multihash || multihash.length !== 34 || multihash[0] !== SHA2_256 || multihash[1] !== 32) {
+    if (!multihash || multihash.length !== CIDV0_MULTIHASH_BYTES || multihash[0] !== SHA2_256 || multihash[1] !== SHA2_256_DIGEST_BYTES) {
       return null
     }
     return { codec: CODEC_DAG_PB, digest: multihash.slice(2) }
   }
   if (/^b[a-z2-7]+$/.test(cid)) {
     const bytes = decodeBase32(cid.slice(1))
-    // version 1, single-byte codec, sha2-256 multihash of 32 bytes
-    if (!bytes || bytes.length !== 36 || bytes[0] !== 1) return null
-    if (bytes[2] !== SHA2_256 || bytes[3] !== 32) return null
+    if (!bytes || bytes.length !== CIDV1_BINARY_BYTES || bytes[0] !== CIDV1_VERSION) return null
+    if (bytes[2] !== SHA2_256 || bytes[3] !== SHA2_256_DIGEST_BYTES) return null
     return { codec: bytes[1]!, digest: bytes.slice(4) }
   }
   return null
@@ -92,10 +99,23 @@ function concat(...parts: ArrayLike<number>[]): Uint8Array {
   return Uint8Array.from(parts.flatMap((part) => Array.from(part)))
 }
 
+// Protobuf field tags (field number << 3 | wire type) used by dag-pb/UnixFS.
+const PB_UNIXFS_TYPE_TAG = 0x08 // UnixFS Data.Type, varint
+const PB_UNIXFS_TYPE_FILE = 0x02 // Type = File
+const PB_UNIXFS_DATA_TAG = 0x12 // UnixFS Data.Data, length-delimited
+const PB_UNIXFS_FILESIZE_TAG = 0x18 // UnixFS Data.filesize, varint
+const PB_NODE_DATA_TAG = 0x0a // dag-pb PBNode.Data, length-delimited
+
 /** dag-pb node holding a single-chunk UnixFS file (Type=File, Data, filesize). */
 function encodeUnixFsFileNode(bytes: Uint8Array): Uint8Array {
-  const unixfs = concat([0x08, 0x02, 0x12], varint(bytes.length), bytes, [0x18], varint(bytes.length))
-  return concat([0x0a], varint(unixfs.length), unixfs)
+  const unixfs = concat(
+    [PB_UNIXFS_TYPE_TAG, PB_UNIXFS_TYPE_FILE, PB_UNIXFS_DATA_TAG],
+    varint(bytes.length),
+    bytes,
+    [PB_UNIXFS_FILESIZE_TAG],
+    varint(bytes.length)
+  )
+  return concat([PB_NODE_DATA_TAG], varint(unixfs.length), unixfs)
 }
 
 async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
