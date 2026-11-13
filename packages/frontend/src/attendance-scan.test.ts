@@ -62,6 +62,7 @@ function setup(options: { account?: Address | null; creator?: Address; camera?: 
     signMessage: vi.fn(),
   } as unknown as WalletAdapter
   const readContract = vi.fn(async (request: { functionName: string }) => {
+    if (request.functionName === 'attendanceVersion') return 1
     if (request.functionName === 'proposalCount') return 5n
     if (request.functionName === 'getProposal') {
       return {

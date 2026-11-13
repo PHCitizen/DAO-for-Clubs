@@ -1,6 +1,21 @@
 # Attendance v2 proposal fixture
 
-Evaluation only; no frontend/production imports. Agreement: [`docs/attendance-format-v2-proposal.md`](../../../../docs/attendance-format-v2-proposal.md). TODO-02 is still awaiting **user format approval**.
+The evaluation fixture below remains isolated from production imports. The
+[agreement](../../../../docs/attendance-format-v2-proposal.md) is now approved;
+historical approval-pending statements below describe the original evaluation.
+[Ticket 07.01](../../../../.scratch/07-attendance-publication/issues/01-prepare-attendance-set.md)
+records the application integration. `export-browser-hash.ts` reproducibly
+compiles this directory's `hash.nr` against the exact pinned clean upstream
+Noir source and beta.26 compiler into `packages/frontend/src/attendanceHash.json`.
+The frontend executes that arithmetic adapter with exact beta.26 NoirJS/ACVM
+dependencies; it does not import the evaluation tree code or a proof runtime.
+
+Reproduce the checked-in adapter after fetching the upstream/tool versions below:
+
+```sh
+POSEIDON_NOIR=/tmp/opencode/attendance-noir-poseidon NARGO=/tmp/opencode/attendance-bin/nargo pnpm --filter @dao/contracts exec tsx scripts/attendance-v2/export-browser-hash.ts
+git diff --exit-code -- packages/frontend/src/attendanceHash.json
+```
 
 ## What actually passed (2026-11-13)
 

@@ -1,6 +1,7 @@
 import { isAddress, type Address, type Hex } from 'viem'
 import type { AttendanceStorageState, AttendanceStore } from './attendanceStorage.js'
 import { ATTENDANCE_QR_VERSION, sameAttendanceEvent, type AttendanceEvent } from './attendance.js'
+import { parseAttendanceV2Qr } from './attendanceV2.js'
 
 /**
  * Organizer-side attendance collection (spec 06.02). Validation and
@@ -112,6 +113,15 @@ export function createAttendanceCollection(event: AttendanceEvent, store: Attend
 
   return {
     submit(payload) {
+      if (event.credentialVersion === 2) {
+        let entry: Hex
+        try { entry = parseAttendanceV2Qr(payload, event) } catch { return reject('malformed') }
+        if (seen.has(entry)) return { status: 'duplicate', count: entries.length }
+        seen.add(entry)
+        entries.push(entry)
+        storageState = store.save(entries)
+        return { status: 'accepted', count: entries.length, saved: storageState.status === 'saved' }
+      }
       const parsed = parseAttendanceQr(payload)
       if (!parsed.ok) return reject(parsed.reason)
       if (!sameAttendanceEvent({ chainId: parsed.chainId, daoAddress: parsed.dao, proposalId: parsed.proposalId }, event)) {

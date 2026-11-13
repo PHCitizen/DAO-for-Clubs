@@ -178,6 +178,7 @@ test('proposal creation on a real local chain', async (t) => {
       assert.deepEqual(mutating, [
         'checkPassing',
         'createProposal',
+        'createProposalV2',
         'createTreasury',
         'releaseFunds',
         'voteNo',
