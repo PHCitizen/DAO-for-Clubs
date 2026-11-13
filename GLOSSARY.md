@@ -32,6 +32,22 @@ _Avoid_: Proposal expiry
 **Fund release**:
 The event creator's request to transfer an approved proposal's funding from its treasury. Insufficient treasury funds delay release rather than cancel approval; attendance collection does not depend on fund release.
 
+**Funding state**:
+Where a proposal's payment stands, derived from chain state when read and independent of voting and attendance. It is one of: not passed, passed awaiting funds, payment pending, payment failed, or paid. Passing never reserves treasury funds, so the state follows the treasury balance at read time.
+
+**Passed awaiting funds**:
+A passed, unpaid proposal whose treasury balance is currently below its amount. It takes precedence over payment failed: a shortage reads as awaiting funds whatever an earlier attempt did, and the creator may retry once the treasury is replenished.
+
+**Payment pending**:
+A passed, unpaid proposal that is currently fundable: the treasury balance covers its amount and the latest release attempt, if any, was not a refused transfer. It does not mean a transaction is in flight.
+_Avoid_: In-flight payment, processing
+
+**Payment failed**:
+A passed, unpaid proposal whose latest release attempt found sufficient balance but was refused by the funding asset's transfer; nothing was paid. It persists until a later attempt hits a shortage or pays, since only an attempt can show the asset has recovered. It remains retryable by the event creator.
+
+**Paid**:
+TestUSD actually moved to the proposal's fixed recipient, exactly once. A successful release receipt alone is not proof; only the payment event or paid state is.
+
 **Treasury**:
 An event-funding pool that anyone can create through the DAO. Its creator is its administrator and controls minting and burning of that treasury's voting NFTs; the DAO has no administrator.
 

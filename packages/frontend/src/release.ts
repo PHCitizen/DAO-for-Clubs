@@ -7,35 +7,47 @@ import {
 } from './proposalCreation.js'
 
 /**
- * Funding state of a proposal, kept separate from voting and attendance.
- * `passed-awaiting-funds` means passing is recorded but no TestUSD has moved.
+ * Funding state of a proposal, kept separate from voting and attendance. All
+ * of it is derived from chain state at read time, never from a stale estimate:
+ * - `passed-awaiting-funds`: passing recorded, unpaid, treasury balance below the amount.
+ * - `payment-pending`: passing recorded, unpaid, the balance covers the amount now; the
+ *   creator's release request has not (yet) moved funds. Passing never reserves the balance.
+ * - `payment-failed`: the latest release attempt found the balance sufficient but the asset
+ *   refused the transfer. Still retryable.
+ * - `paid`: TestUSD actually moved, exactly once.
  */
 export interface ProposalFunding {
   proposalId: bigint
   amount: bigint
   recipient: Address
-  state: 'not-passed' | 'passed-awaiting-funds' | 'paid'
+  state: 'not-passed' | 'passed-awaiting-funds' | 'payment-pending' | 'payment-failed' | 'paid'
 }
 
 const FUNDING_STATE_TEXT: Record<ProposalFunding['state'], string> = {
   'not-passed': 'Not passed: no funds can be released.',
-  'passed-awaiting-funds': 'Passed; not yet paid.',
+  'passed-awaiting-funds': 'Passed; awaiting funds: the treasury balance is below the amount. Retry after it is replenished.',
+  'payment-pending': 'Passed; the treasury can currently cover the amount, but it is not yet paid. Passing does not reserve funds.',
+  'payment-failed': 'Passed; the last payment attempt failed because the funding asset refused the transfer. Retry is possible.',
   paid: 'Paid: funds were sent to the fixed recipient.',
 }
 
+/** States in which the creator's release request is offered; a new state is not releasable until added here. */
+const RETRYABLE_STATES: ReadonlySet<ProposalFunding['state']> =
+  new Set(['passed-awaiting-funds', 'payment-pending', 'payment-failed'])
+
 /** What a funding read looks like to a user: status line and whether the release action is offered. */
 export function describeFunding(funding: ProposalFunding): { statusText: string; canRelease: boolean } {
-  return { statusText: FUNDING_STATE_TEXT[funding.state], canRelease: funding.state === 'passed-awaiting-funds' }
+  return { statusText: FUNDING_STATE_TEXT[funding.state], canRelease: RETRYABLE_STATES.has(funding.state) }
 }
 
 export type ReleaseOutcome = 'confirmed' | 'funds-pending'
-export type FundsPendingReason = 'insufficient-balance' | 'transfer-refused'
+export type FundsPendingReason = 'insufficient-balance' | 'payment-failed'
 
 export const CHAIN_MISMATCH_MESSAGE = 'Wallet and deployment chains must match.'
 
 export function describeReleaseOutcome(outcome: ReleaseOutcome, hash: Hex, reason?: FundsPendingReason): string {
   if (outcome === 'confirmed') return `Payment confirmed: ${hash}`
-  const cause = reason === 'transfer-refused'
+  const cause = reason === 'payment-failed'
     ? 'the funding asset refused the transfer'
     : 'the treasury balance is insufficient'
   return `Not paid: ${cause}. Passing is kept; retry when it is resolved. (${hash})`
@@ -67,11 +79,16 @@ export async function readProposalFunding(
   const terms = await readProposalTerms(chain, config, proposalId)
   if (terms === null) return null
   const read = <T>(functionName: string) => readDao<T>(chain, config, functionName, proposalId)
-  const [passingRecorded, paid] = await Promise.all([
+  const [passingRecorded, paid, paymentFailed, treasuryBalance] = await Promise.all([
     readPassingRecorded(chain, config, proposalId),
     read<boolean>('fundsReleased'),
+    read<boolean>('paymentFailed'),
+    chain.readContract<bigint>({ address: config.testUsdAddress, abi: config.testUsdAbi, functionName: 'balanceOf', args: [terms.treasury] }),
   ])
-  const state = paid ? 'paid' : passingRecorded ? 'passed-awaiting-funds' : 'not-passed'
+  const state: ProposalFunding['state'] = paid ? 'paid'
+    : !passingRecorded ? 'not-passed'
+    : treasuryBalance < terms.amount ? 'passed-awaiting-funds'
+    : paymentFailed ? 'payment-failed' : 'payment-pending'
   return { proposalId, amount: terms.amount, recipient: terms.payoutRecipient, state }
 }
 
@@ -125,7 +142,7 @@ export async function releaseProposalFunds(
     : emitted('FundingShortage') || emitted('FundsTransferFailed') ? 'funds-pending' : null
   if (status === null) throw new FundReleaseConfirmationError('No matching release or funding-shortage event was found in the receipt.', hash)
   const reason: FundsPendingReason | undefined = status === 'funds-pending'
-    ? (emitted('FundsTransferFailed') ? 'transfer-refused' : 'insufficient-balance') : undefined
+    ? (emitted('FundsTransferFailed') ? 'payment-failed' : 'insufficient-balance') : undefined
   // A failed refresh must not change what the receipt already established.
   try {
     return { status, hash, reason, funding: await readProposalFunding(chain, config, input.proposalId) }
