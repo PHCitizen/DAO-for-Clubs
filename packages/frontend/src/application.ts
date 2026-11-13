@@ -1,5 +1,5 @@
 import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
-import { castYesVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError, type VotingProgress } from './voting.js'
+import { castVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError, type VotingProgress } from './voting.js'
 import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
@@ -770,7 +770,7 @@ export type VotingReadResult =
   | { status: 'not-found'; id: bigint }
   | TreasuryReadFailure
 
-export type YesVoteResult =
+export type VoteResult =
   | { status: 'confirmed'; hash: Hex; progress: VotingProgress | null }
   | { status: 'invalid-input'; message: string }
   | TransactionActionFailure
@@ -1113,14 +1113,22 @@ export function createApplication(
       } catch (error) { return toProposalReadFailure(error) }
     },
 
-    async voteYes(proposalId: bigint, tokenId: bigint): Promise<YesVoteResult> {
+    async voteYes(proposalId: bigint, tokenId: bigint): Promise<VoteResult> {
+      return this.submitVote(proposalId, tokenId, 'yes')
+    },
+
+    async voteNo(proposalId: bigint, tokenId: bigint): Promise<VoteResult> {
+      return this.submitVote(proposalId, tokenId, 'no')
+    },
+
+    async submitVote(proposalId: bigint, tokenId: bigint, choice: 'yes' | 'no'): Promise<VoteResult> {
       if (proposalId <= 0n || tokenId <= 0n || proposalId >= 2n ** 256n || tokenId >= 2n ** 256n) return { status: 'invalid-input', message: 'Enter valid positive proposal and token IDs.' }
       if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'Voting requires a configured DAO and RPC endpoint.' }
       if (!adapter) return { status: 'wallet-unavailable', message: 'No wallet extension is available.' }
       if (walletState.status !== 'connected') return { status: 'wallet-not-connected', message: 'Connect the voting NFT holder wallet.' }
       try {
         const prepared = await this.prepareDeploymentAction({ target: 'dao' })
-        return await castYesVote(proposalChain, proposalConfig, { from: prepared.context.account, proposalId, tokenId }, async () => {
+        return await castVote(proposalChain, proposalConfig, { from: prepared.context.account, proposalId, tokenId, choice }, async () => {
           const [account, chainId] = await Promise.all([adapter.getAccount(), adapter.getChainId()])
           if (chainId !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, chainId ?? 0)
           if (account?.toLowerCase() !== prepared.context.account.toLowerCase()) throw new StaleActionConfigurationError()
@@ -1137,7 +1145,7 @@ export function createApplication(
           revertedMessage: 'The vote reverted. No ballot was recorded.',
           rpcUnavailableMessage: 'Voting could not reach the configured RPC endpoint.',
           rejectedMessage: 'The vote was rejected in your wallet. Nothing was submitted.',
-          submissionMessage: 'The yes vote was not submitted. Check ownership, token consumption, and whether voting is still open.',
+          submissionMessage: `The ${choice} vote was not submitted. Check ownership, token consumption, and whether voting is still open.`,
         })
       }
     },

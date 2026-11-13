@@ -50,6 +50,7 @@ contract DAO {
 
     struct VotingResult {
         uint256 yesVotes;
+        uint256 noVotes;
         bool passingRecorded;
     }
 
@@ -57,6 +58,7 @@ contract DAO {
     mapping(uint256 => mapping(uint256 => bool)) public ballotConsumed;
 
     event YesVoteCast(uint256 indexed proposalId, uint256 indexed tokenId, address indexed voter);
+    event NoVoteCast(uint256 indexed proposalId, uint256 indexed tokenId, address indexed voter);
     event ProposalPassed(uint256 indexed proposalId);
 
     event TreasuryCreated(address indexed treasury, address indexed administrator);
@@ -173,12 +175,25 @@ contract DAO {
 
     /// @notice One immutable ballot per treasury credential per proposal.
     function voteYes(uint256 proposalId, uint256 tokenId) external {
+        _castVote(proposalId, tokenId, true);
+    }
+
+    function voteNo(uint256 proposalId, uint256 tokenId) external {
+        _castVote(proposalId, tokenId, false);
+    }
+
+    function _castVote(uint256 proposalId, uint256 tokenId, bool support) internal {
         Proposal storage proposal = _requireOpenVote(proposalId);
         if (ballotConsumed[proposalId][tokenId]) revert BallotAlreadyCast();
         if (Treasury(proposal.treasury).ownerOf(tokenId) != msg.sender) revert NotVotingNftHolder();
         ballotConsumed[proposalId][tokenId] = true;
-        _voting[proposalId].yesVotes++;
-        emit YesVoteCast(proposalId, tokenId, msg.sender);
+        if (support) {
+            _voting[proposalId].yesVotes++;
+            emit YesVoteCast(proposalId, tokenId, msg.sender);
+        } else {
+            _voting[proposalId].noVotes++;
+            emit NoVoteCast(proposalId, tokenId, msg.sender);
+        }
         _recordPassingIfQualified(proposalId);
     }
 
@@ -205,11 +220,11 @@ contract DAO {
 
     /// @notice Coherent live progress and outcome using chain time, not client time.
     function getVoting(uint256 proposalId) external view returns (
-        uint256 yesVotes, uint256 threshold, bool passingRecorded, bool open
+        uint256 yesVotes, uint256 threshold, bool passingRecorded, bool open, uint256 noVotes
     ) {
         if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
         VotingResult storage result = _voting[proposalId];
         return (result.yesVotes, _yesThreshold(proposalId), result.passingRecorded,
-            !result.passingRecorded && block.timestamp < _proposals[proposalId].votingDeadline);
+            !result.passingRecorded && block.timestamp < _proposals[proposalId].votingDeadline, result.noVotes);
     }
 }
