@@ -24,6 +24,8 @@ Spec status indicates a defined work contract, not that every dependency is sati
 
 Active prerequisite: [TODO-01: transparent ZK feasibility and shared format](../todos/01-transparent-zk-feasibility.md). Public copying/private-proof reuse and first-claim front-running are accepted weaknesses; a consumed entry still cannot yield another public claim.
 
+Latest scope: **Chrome only**. [TODO-02: shared attendance format agreement](../todos/02-attendance-format-agreement.md) is the actionable publication-format prerequisite, separate from TODO-01's full private-proof qualification. Feature 07 does not wait for Firefox, native proof interoperability, private-proof budgets, or a Solidity ZK verifier. Its concrete shared format is still unapproved; start TODO-02 now rather than guessing a production tree.
+
 ## Workspace agreement
 
 Use pnpm with a pinned package-manager version and shared lockfile. Scaffold a frontend workspace package and a contracts/tooling workspace package. The latter owns Solidity, Hardhat, contract tests, and deployment/maintenance scripts. Root commands orchestrate the workspace; filtered commands support focused work.
@@ -104,7 +106,7 @@ The original implementation frontier was 01.01; determine the current frontier f
 
 | ID | Specialized task | Blocked by | Verifiable result |
 | --- | --- | --- | --- |
-| [07.01](07-attendance-publication/issues/01-prepare-attendance-set.md) | Prepare and preview a canonical attendance set | 06.03, TODO-01 | The organizer reviews a deterministic dataset/root with explicit immutable-finalization consequences. |
+| [07.01](07-attendance-publication/issues/01-prepare-attendance-set.md) | Prepare and preview a canonical attendance set | 06.03, TODO-02 format approval | The organizer reviews a deterministic dataset/root with explicit immutable-finalization consequences. |
 | [07.02](07-attendance-publication/issues/02-pin-attendance-set.md) | Pin the prepared attendance set | 07.01, 03.02 | The organizer reuses the established IPFS transport with their own credentials, uploads the exact attendance data, and can retry without leaking credentials. |
 | [07.03](07-attendance-publication/issues/03-finalize-attendance.md) | Finalize the attendance root and reference on-chain | 07.02 | Only the organizer publishes once; rejected submissions remain retryable and funding status is irrelevant. |
 | [07.04](07-attendance-publication/issues/04-validate-attendance-data.md) | Retrieve and validate the attendance set | 07.03 | Readers fetch the data, verify its root against the chain, and reconstruct canonical membership paths or receive an honest failure. |

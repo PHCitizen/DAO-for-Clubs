@@ -1,7 +1,7 @@
 # Feature 07: Immutable attendance publication
 
 Status: ready-for-agent
-Blocked by: TODO-01 for the canonical cryptographic format
+Blocked by: TODO-02 for the approved canonical cryptographic format, not completion of private-proof qualification in TODO-01
 
 ## Problem Statement
 
