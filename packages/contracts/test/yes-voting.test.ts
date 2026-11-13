@@ -34,6 +34,7 @@ test('yes ballots and recorded passing through real contracts and application ac
       onAccountChanged: () => () => {},
       onChainChanged: () => () => {},
       switchChain: async () => {},
+      signMessage: async () => { throw new Error('signing is not used by voting') },
       sendTransaction: async request => connection.provider.request({ method: 'eth_sendTransaction', params: [{
         from: request.from, to: request.to,
         data: encodeFunctionData({ abi: request.abi, functionName: request.functionName, args: request.args }),
