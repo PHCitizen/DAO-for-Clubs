@@ -54,6 +54,7 @@ export interface DeploymentConfig {
   chainId: number
   daoAddress: Address | null
   testUsdAddress?: Address | null
+  attendanceClaimsAddress?: Address | null
   rpcUrl?: string
 }
 
@@ -61,6 +62,7 @@ export const DEFAULT_DEPLOYMENT_CONFIG: DeploymentConfig = {
   chainId: publicArtifacts.chainId ?? 31337,
   daoAddress: (publicArtifacts.daoAddress as Address | null) ?? null,
   testUsdAddress: (publicArtifacts.testUsdAddress as Address | null) ?? null,
+  attendanceClaimsAddress: ((publicArtifacts as { attendanceClaimsAddress?: Address | null }).attendanceClaimsAddress) ?? null,
 }
 
 export interface DeploymentContext {
@@ -69,6 +71,7 @@ export interface DeploymentContext {
   isSupported: boolean
   daoAddress: Address | null
   testUsdAddress: Address | null
+  attendanceClaimsAddress: Address | null
   isDeployed: boolean
   rpcUrl?: string
   chain?: ChainDefinition
@@ -78,6 +81,7 @@ export function resolveDeploymentContext(overrides?: Partial<DeploymentConfig>):
   const chainId = overrides?.chainId ?? DEFAULT_DEPLOYMENT_CONFIG.chainId
   const daoAddress = overrides?.daoAddress !== undefined ? overrides.daoAddress : DEFAULT_DEPLOYMENT_CONFIG.daoAddress
   const testUsdAddress = overrides?.testUsdAddress !== undefined ? overrides.testUsdAddress : (DEFAULT_DEPLOYMENT_CONFIG.testUsdAddress ?? null)
+  const attendanceClaimsAddress = overrides?.attendanceClaimsAddress !== undefined ? overrides.attendanceClaimsAddress : (DEFAULT_DEPLOYMENT_CONFIG.attendanceClaimsAddress ?? null)
   const chain = getSupportedChain(chainId)
   const isSupported = chain !== undefined
   const chainName = chain?.name ?? `Unsupported Chain (${chainId})`
@@ -89,6 +93,7 @@ export function resolveDeploymentContext(overrides?: Partial<DeploymentConfig>):
     isSupported,
     daoAddress,
     testUsdAddress,
+    attendanceClaimsAddress,
     isDeployed: daoAddress !== null,
     rpcUrl,
     chain,

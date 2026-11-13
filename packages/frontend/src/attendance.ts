@@ -72,6 +72,26 @@ export function deriveAttendanceCredential(signature: Hex, proposalId: bigint): 
   return { entry }
 }
 
+/**
+ * Derives both the secret and the entry for the opt-in public-claim flow
+ * (spec 09). Unlike `deriveAttendanceCredential`, this intentionally returns
+ * the secret: public claiming discloses it on-chain by design. Only call
+ * this after the holder has explicitly consented to permanent disclosure;
+ * never log, persist, or transmit the result outside the claim payload.
+ */
+export function deriveAttendancePublicClaimWitness(signature: Hex, proposalId: bigint): { secret: Hex; entry: Hex } {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) throw new InvalidAttendanceSignatureError()
+  const secret = sha256(
+    encodeAbiParameters([{ type: 'bytes' }, { type: 'uint256' }], [signature, proposalId]),
+    'hex'
+  )
+  const entry = sha256(
+    encodeAbiParameters([{ type: 'uint256' }, { type: 'bytes32' }], [proposalId, secret]),
+    'hex'
+  )
+  return { secret, entry }
+}
+
 export function encodeAttendanceQr(event: AttendanceEvent & { entry: Hex }): string {
   return JSON.stringify({
     v: ATTENDANCE_QR_VERSION,

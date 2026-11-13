@@ -4,7 +4,7 @@
 **Spec:** [Feature 09: Opt-in public attendance claims](../spec.md)
 **What to build:** A claimant submits a secret and Merkle path for ordinary on-chain hash verification, creating one permanent sender-event association per validated entry while deliberately exposing the transferable credential.
 **Blocked by:** [09.01 — Prepare a public-claim secret and membership witness](01-prepare-public-claim-proof.md).
-**Status:** ready-for-agent
+**Status:** implemented (POC fixture; cost-ceiling and canonical-format approvals remain)
 
 ## Acceptance criteria
 
@@ -25,3 +25,10 @@ No claim deletion, transfer, revocation, gasless relayer, Solidity ZK verifier, 
 ## Comments
 
 2026-11-13: Reconciled with the user-approved public secret/path disclosure design and entry-based single-claim enforcement.
+
+### Implementation — 2026-11-13
+- `AttendanceClaims.sol` derives `entry = sha256(abi.encode(proposalId, secret))`, verifies the sorted-pair keccak256 path against the finalized root, records the association for `msg.sender` via `PublicAttendanceClaimed(proposalId, claimant, entry)`, and sets `entryConsumed[proposalId][entry]` only for a valid claim. Invalid proofs, unfinalized roots, and duplicates revert without consuming anything; consumption is keyed by the derived entry, never a caller-chosen nullifier. No ZK verifier is used and events omit the secret and recovery signature.
+- `finalizeAttendanceRoot` is a one-time organizer-only fixture standing in for 07's publication pipeline; attendance requires neither passing nor payment.
+- `attendanceClaims.ts::submitPublicAttendanceClaim` separates submission, revert, and confirmation failure and requires a matching claim event; `application.ts::submitPublicClaim` maps wallet rejection, verification failure/duplicate, and stale-account outcomes and never reports a failed claim as confirmed.
+- Copied-witness first-claim success followed by duplicate rejection is covered by `packages/contracts/test/public-attendance-claims.test.ts`; front-running is documented as accepted, not prevented.
+- Not completed: BSC gas/calldata/size cost-ceiling approval, TODO-01 canonical-format approval, and a private-ZK observer-presentation demonstration (feature 08 is unbuilt).

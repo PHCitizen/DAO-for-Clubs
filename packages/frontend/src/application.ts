@@ -10,7 +10,7 @@ import {
   FundReleaseSubmissionError, FundReleaseRevertedError, FundReleaseConfirmationError,
   type ProposalFunding,
 } from './release.js'
-import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, parseAbi, type Hash, type Hex } from 'viem'
+import { decodeEventLog, erc20Abi, formatUnits, getAddress, isAddress, parseUnits, parseAbi, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
   type Address,
@@ -87,6 +87,7 @@ import {
   InvalidAttendanceSignatureError,
   attendanceSigningMessage,
   deriveAttendanceCredential,
+  deriveAttendancePublicClaimWitness,
   encodeAttendanceQr,
   attendanceEventKey,
   isAttendanceProposalId,
@@ -101,6 +102,19 @@ import {
 } from './attendanceScan.js'
 import { createAttendanceStore, type AttendanceStorage } from './attendanceStorage.js'
 import { attendanceV2SigningMessage, deriveAttendanceV2Credential, encodeAttendanceV2Qr, prepareAttendanceV2Set, type PreparedAttendanceSet } from './attendanceV2.js'
+import {
+  type AttendanceClaimsConfig,
+  type PublicAttendanceClaim,
+  preparePublicAttendanceClaim,
+  submitPublicAttendanceClaim,
+  readPublicAttendanceClaimsByEvent,
+  readPublicAttendanceClaimsByWallet,
+  finalizeAttendanceRoot,
+  PublicClaimSubmissionError,
+  PublicClaimRevertedError,
+  PublicClaimConfirmationError,
+} from './attendanceClaims.js'
+import { attendanceMerkleRoot } from './attendanceMerkle.js'
 import {
   type IpfsCredentials,
   type IpfsTransport,
@@ -923,6 +937,57 @@ async function readProposalTokenFormat(
   return { decimals: Number(decimals), symbol }
 }
 
+// ---------------------------------------------------------------------------
+// Opt-in public attendance claims (spec 09)
+// ---------------------------------------------------------------------------
+
+export type PublicClaimState =
+  | { status: 'idle' }
+  | { status: 'preparing' }
+  | { status: 'ready'; proposalId: bigint; account: Address; entry: Hex; root: Hex }
+  | { status: 'submitting'; proposalId: bigint }
+  | { status: 'confirmed'; proposalId: bigint; hash: Hex }
+  | { status: 'rejected'; message: string }
+  | { status: 'failed'; message: string; retryable: true }
+
+export type PreparePublicClaimResult =
+  | { status: 'ready'; proposalId: bigint; entry: Hex; root: Hex }
+  | {
+      status:
+        | 'consent-required'
+        | 'wallet-unavailable'
+        | 'wallet-not-connected'
+        | 'chain-mismatch'
+        | 'unconfigured'
+        | 'no-entries'
+        | 'not-finalized'
+        | 'not-a-member'
+        | 'already-consumed'
+        | 'stale-configuration'
+        | 'wallet-rejected'
+        | 'failed'
+      message: string
+    }
+
+export type SubmitPublicClaimResult =
+  | { status: 'confirmed'; hash: Hex }
+  | {
+      status:
+        | 'not-prepared'
+        | 'stale-account'
+        | 'unconfigured'
+        | 'wallet-unavailable'
+        | 'wallet-not-connected'
+        | 'chain-mismatch'
+        | 'rejected'
+        | 'failed'
+      message: string
+    }
+
+export type PublicClaimsReadResult =
+  | { status: 'success'; claims: PublicAttendanceClaim[] }
+  | { status: 'unconfigured' | 'rpc-unavailable'; message: string }
+
 export function createApplication(
   adapter?: WalletAdapter,
   injectedRpcAdapter?: RpcAdapter,
@@ -1108,6 +1173,15 @@ export function createApplication(
         }
       : null
 
+  const attendanceClaimsConfig: AttendanceClaimsConfig | null = deploymentContext.attendanceClaimsAddress
+    ? {
+        chainId: deploymentContext.chainId,
+        attendanceClaimsAddress: deploymentContext.attendanceClaimsAddress,
+        attendanceClaimsAbi: (publicArtifacts.abis as unknown as Record<string, import('viem').Abi>)
+          .AttendanceClaims,
+      }
+    : null
+
   // Mutable wallet state kept inside the closure; listeners notify subscribers.
   let walletState: WalletState = { status: 'disconnected' }
   const listeners = new Set<WalletStateListener>()
@@ -1212,6 +1286,44 @@ export function createApplication(
   function emitProposalCreation(state: ProposalCreationState) {
     proposalCreationState = state
     for (const listener of proposalCreationListeners) listener(state)
+  }
+
+  // Public attendance claim state. The secret/proof stay in this closure and
+  // are only used for the explicit claim transaction, never logged or persisted.
+  let publicClaimState: PublicClaimState = { status: 'idle' }
+  let preparedPublicClaim: {
+    account: Address
+    chainId: number
+    proposalId: bigint
+    secret: Hex
+    entry: Hex
+    proof: Hex[]
+    root: Hex
+  } | null = null
+  const publicClaimListeners = new Set<(state: PublicClaimState) => void>()
+  function emitPublicClaim(state: PublicClaimState) {
+    publicClaimState = state
+    for (const listener of publicClaimListeners) listener(state)
+  }
+
+  function attendanceEntriesFor(proposalId: bigint): Hex[] {
+    if (!deploymentContext.daoAddress) return []
+    const key = attendanceEventKey({
+      chainId: deploymentContext.chainId,
+      daoAddress: deploymentContext.daoAddress,
+      proposalId,
+    })
+    return attendanceCollections.get(key)?.read().entries ?? []
+  }
+
+  function dedupeClaims(claims: PublicAttendanceClaim[]): PublicAttendanceClaim[] {
+    const seen = new Set<string>()
+    return claims.filter((claim) => {
+      const key = `${claim.proposalId}:${claim.claimant.toLowerCase()}:${claim.entry}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
   }
 
   async function fundingBalances(treasury: Address, sender: Address): Promise<FundingBalances> {
@@ -1876,6 +1988,314 @@ export function createApplication(
         return { status: 'success', chainId: proposalConfig.chainId, count }
       } catch (error) {
         return toProposalReadFailure(error)
+      }
+    },
+
+    // -----------------------------------------------------------------------
+    // Opt-in public attendance claims (spec 09)
+    // -----------------------------------------------------------------------
+
+    readPublicClaimState: () => publicClaimState,
+
+    onPublicClaimStateChanged(listener: (state: PublicClaimState) => void) {
+      publicClaimListeners.add(listener)
+      return () => {
+        publicClaimListeners.delete(listener)
+      }
+    },
+
+    /** Locally available published entries for an event (organizer collection). */
+    readAttendanceEntries(proposalId: bigint): Hex[] {
+      return attendanceEntriesFor(proposalId)
+    },
+
+    /**
+     * Signs the attendance message, derives the secret/entry, and verifies the
+     * membership path locally against the finalized root. Requires explicit
+     * disclosure consent; no chain transaction is created here.
+     */
+    async preparePublicClaim(request: {
+      proposalId: bigint
+      consent: boolean
+    }): Promise<PreparePublicClaimResult> {
+      if (request.consent !== true) {
+        return {
+          status: 'consent-required',
+          message: 'Explicitly accept permanent public disclosure before preparing a public claim.',
+        }
+      }
+      if (!proposalChain || !attendanceClaimsConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'Public claims require a configured AttendanceClaims deployment and RPC endpoint.',
+        }
+      }
+      if (!adapter) {
+        return {
+          status: 'wallet-unavailable',
+          message: 'No wallet extension is available to sign the attendance message.',
+        }
+      }
+      if (!isAttendanceProposalId(request.proposalId)) {
+        return { status: 'failed', message: 'The proposal ID is not a valid unsigned 256-bit number.' }
+      }
+      const entries = attendanceEntriesFor(request.proposalId)
+      if (entries.length === 0) {
+        return {
+          status: 'no-entries',
+          message:
+            'No published attendance entries are available locally for this event. The attendance set must be published before claiming.',
+        }
+      }
+
+      let prepared
+      try {
+        prepared = await this.prepareDeploymentAction({
+          target: attendanceClaimsConfig.attendanceClaimsAddress,
+        })
+      } catch (error) {
+        if (error instanceof WalletNotConnectedError) {
+          return { status: 'wallet-not-connected', message: 'Connect the claiming wallet first.' }
+        }
+        if (error instanceof ChainMismatchError) {
+          return {
+            status: 'chain-mismatch',
+            message: `The wallet is on chain ${error.actualChainId}, but this deployment uses chain ${error.expectedChainId}.`,
+          }
+        }
+        return { status: 'unconfigured', message: error instanceof Error ? error.message : String(error) }
+      }
+
+      const { account, chainId } = prepared.context
+      emitPublicClaim({ status: 'preparing' })
+      try {
+        const event: AttendanceEvent = {
+          chainId,
+          daoAddress: deploymentContext.daoAddress!,
+          proposalId: request.proposalId,
+        }
+        const signature = await adapter.signMessage(account, attendanceSigningMessage(event))
+        prepared.assertValid()
+        const { secret, entry } = deriveAttendancePublicClaimWitness(signature, request.proposalId)
+        const preparedClaim = await preparePublicAttendanceClaim(proposalChain, attendanceClaimsConfig, {
+          proposalId: request.proposalId,
+          secret,
+          entry,
+          publishedEntries: entries,
+        })
+        if (preparedClaim.status !== 'ready') {
+          emitPublicClaim({ status: 'idle' })
+          const message =
+            preparedClaim.status === 'not-finalized'
+              ? 'The attendance root is not finalized for this event yet.'
+              : preparedClaim.status === 'already-consumed'
+                ? 'This credential has already been used for a public claim.'
+                : 'The recovered secret and Merkle path do not match the finalized attendance root.'
+          return { status: preparedClaim.status, message }
+        }
+
+        preparedPublicClaim = {
+          account,
+          chainId,
+          proposalId: request.proposalId,
+          secret,
+          entry,
+          proof: preparedClaim.proof,
+          root: preparedClaim.root,
+        }
+        emitPublicClaim({
+          status: 'ready',
+          proposalId: request.proposalId,
+          account,
+          entry,
+          root: preparedClaim.root,
+        })
+        return { status: 'ready', proposalId: request.proposalId, entry, root: preparedClaim.root }
+      } catch (error) {
+        emitPublicClaim({ status: 'idle' })
+        if (error instanceof StaleActionConfigurationError) {
+          return { status: 'stale-configuration', message: error.message }
+        }
+        if (error instanceof WalletRejectedError) {
+          return { status: 'wallet-rejected', message: 'The signature request was rejected. Nothing was prepared.' }
+        }
+        return { status: 'failed', message: error instanceof Error ? error.message : String(error) }
+      }
+    },
+
+    /** Submits the prepared disclosure claim; account/deployment changes invalidate it. */
+    async submitPublicClaim(): Promise<SubmitPublicClaimResult> {
+      const claim = preparedPublicClaim
+      if (!claim) return { status: 'not-prepared', message: 'Prepare the public claim witness first.' }
+      if (!proposalChain || !attendanceClaimsConfig) {
+        return { status: 'unconfigured', message: 'Public claims are not configured for this deployment.' }
+      }
+      if (!adapter) {
+        return { status: 'wallet-unavailable', message: 'No wallet extension is available to submit the claim.' }
+      }
+
+      let prepared
+      try {
+        prepared = await this.prepareDeploymentAction({
+          target: attendanceClaimsConfig.attendanceClaimsAddress,
+        })
+      } catch (error) {
+        if (error instanceof WalletNotConnectedError) {
+          return { status: 'wallet-not-connected', message: 'Connect the claiming wallet first.' }
+        }
+        if (error instanceof ChainMismatchError) {
+          return {
+            status: 'chain-mismatch',
+            message: `The wallet is on chain ${error.actualChainId}, but this deployment uses chain ${error.expectedChainId}.`,
+          }
+        }
+        return { status: 'unconfigured', message: error instanceof Error ? error.message : String(error) }
+      }
+
+      if (
+        prepared.context.account.toLowerCase() !== claim.account.toLowerCase() ||
+        prepared.context.chainId !== claim.chainId
+      ) {
+        preparedPublicClaim = null
+        emitPublicClaim({ status: 'idle' })
+        return {
+          status: 'stale-account',
+          message:
+            'The wallet or deployment changed. The prepared claim was discarded; prepare it again for the current account.',
+        }
+      }
+
+      emitPublicClaim({ status: 'submitting', proposalId: claim.proposalId })
+      try {
+        const result = await submitPublicAttendanceClaim(
+          proposalChain,
+          attendanceClaimsConfig,
+          {
+            from: claim.account,
+            proposalId: claim.proposalId,
+            secret: claim.secret,
+            proof: claim.proof,
+            consent: true,
+          },
+          async () => prepared.assertValid()
+        )
+        preparedPublicClaim = null
+        emitPublicClaim({ status: 'confirmed', proposalId: claim.proposalId, hash: result.hash })
+        return { status: 'confirmed', hash: result.hash }
+      } catch (error) {
+        if (error instanceof PublicClaimSubmissionError && error.cause instanceof TransactionRejectedError) {
+          const message = 'The claim was rejected in your wallet. No public association was recorded.'
+          emitPublicClaim({ status: 'rejected', message })
+          return { status: 'rejected', message }
+        }
+        const message =
+          error instanceof PublicClaimRevertedError
+            ? 'The claim reverted on-chain: the secret/path may be wrong, the root is not finalized, or this credential was already consumed. No association was recorded.'
+            : error instanceof PublicClaimConfirmationError
+              ? error.message
+              : error instanceof StaleActionConfigurationError
+                ? 'The wallet or network changed during submission. Check your wallet before retrying.'
+                : `The public claim failed: ${error instanceof Error ? error.message : String(error)}`
+        emitPublicClaim({ status: 'failed', message, retryable: true })
+        return { status: 'failed', message }
+      }
+    },
+
+    /** Confirmed claims for one event, rebuilt from on-chain logs only. */
+    async readPublicClaimsByEvent(proposalId: bigint): Promise<PublicClaimsReadResult> {
+      if (!proposalChain || !attendanceClaimsConfig) {
+        return { status: 'unconfigured', message: 'Public claim reads are not configured for this deployment.' }
+      }
+      try {
+        const claims = await readPublicAttendanceClaimsByEvent(
+          proposalChain,
+          attendanceClaimsConfig,
+          proposalId
+        )
+        return { status: 'success', claims: dedupeClaims(claims) }
+      } catch (error) {
+        return {
+          status: 'rpc-unavailable',
+          message: `Public claims could not be read: ${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
+    },
+
+    /** Confirmed claims for one wallet across all events, from on-chain logs. */
+    async readPublicClaimsByWallet(address: string): Promise<PublicClaimsReadResult> {
+      if (!proposalChain || !attendanceClaimsConfig) {
+        return { status: 'unconfigured', message: 'Public claim reads are not configured for this deployment.' }
+      }
+      if (!isAddress(address)) {
+        return { status: 'rpc-unavailable', message: 'Enter a valid wallet address.' }
+      }
+      try {
+        const claims = await readPublicAttendanceClaimsByWallet(
+          proposalChain,
+          attendanceClaimsConfig,
+          getAddress(address)
+        )
+        return { status: 'success', claims: dedupeClaims(claims) }
+      } catch (error) {
+        return {
+          status: 'rpc-unavailable',
+          message: `Public claims could not be read: ${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
+    },
+
+    /** Organizer fixture for spec 07: finalizes the root of the locally collected set. */
+    async finalizeAttendanceRootForProposal(request: {
+      proposalId: bigint
+    }): Promise<SubmitPublicClaimResult> {
+      if (!proposalChain || !attendanceClaimsConfig) {
+        return { status: 'unconfigured', message: 'Attendance finalization is not configured for this deployment.' }
+      }
+      if (!adapter) {
+        return { status: 'wallet-unavailable', message: 'No wallet extension is available to finalize attendance.' }
+      }
+      const entries = attendanceEntriesFor(request.proposalId)
+      if (entries.length === 0) {
+        return { status: 'failed', message: 'No collected attendance entries exist for this event.' }
+      }
+      let prepared
+      try {
+        prepared = await this.prepareDeploymentAction({
+          target: attendanceClaimsConfig.attendanceClaimsAddress,
+        })
+      } catch (error) {
+        if (error instanceof WalletNotConnectedError) {
+          return { status: 'wallet-not-connected', message: 'Connect the organizer wallet first.' }
+        }
+        if (error instanceof ChainMismatchError) {
+          return {
+            status: 'chain-mismatch',
+            message: `The wallet is on chain ${error.actualChainId}, but this deployment uses chain ${error.expectedChainId}.`,
+          }
+        }
+        return { status: 'unconfigured', message: error instanceof Error ? error.message : String(error) }
+      }
+
+      try {
+        const result = await finalizeAttendanceRoot(
+          proposalChain,
+          attendanceClaimsConfig,
+          {
+            from: prepared.context.account,
+            proposalId: request.proposalId,
+            root: attendanceMerkleRoot(entries),
+          },
+          async () => prepared.assertValid()
+        )
+        return { status: 'confirmed', hash: result.hash }
+      } catch (error) {
+        if (error instanceof PublicClaimSubmissionError && error.cause instanceof TransactionRejectedError) {
+          return { status: 'rejected', message: 'Finalization was rejected in your wallet.' }
+        }
+        return {
+          status: 'failed',
+          message: `Attendance finalization failed: ${error instanceof Error ? error.message : String(error)}`,
+        }
       }
     },
 

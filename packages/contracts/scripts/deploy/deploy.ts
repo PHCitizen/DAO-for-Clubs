@@ -80,15 +80,35 @@ async function deployContracts() {
   const daoAddress = daoReceipt.contractAddress
   console.log(`DAO deployed at: ${daoAddress}`)
 
+  // Deploy AttendanceClaims (public attendance claims, spec 09)
+  const attendanceClaimsArtifact = await loadArtifact('AttendanceClaims')
+  console.log('Deploying AttendanceClaims...')
+  const attendanceClaimsHash = await walletClient.deployContract({
+    account,
+    abi: attendanceClaimsArtifact.abi,
+    bytecode: attendanceClaimsArtifact.bytecode,
+    args: [daoAddress],
+  })
+  const attendanceClaimsReceipt = await publicClient.waitForTransactionReceipt({
+    hash: attendanceClaimsHash,
+  })
+  if (attendanceClaimsReceipt.status !== 'success' || !attendanceClaimsReceipt.contractAddress) {
+    throw new Error('AttendanceClaims deployment failed; configuration was not updated')
+  }
+  const attendanceClaimsAddress = attendanceClaimsReceipt.contractAddress
+  console.log(`AttendanceClaims deployed at: ${attendanceClaimsAddress}`)
+
   // Update public manifest
   const manifest = {
     chainId,
     daoAddress,
     testUsdAddress,
+    attendanceClaimsAddress,
     artifacts: {
       DAO: 'contracts/DAO.sol/DAO.json',
       TestUSD: 'contracts/TestUSD.sol/TestUSD.json',
       Treasury: 'contracts/Treasury.sol/Treasury.json',
+      AttendanceClaims: 'contracts/AttendanceClaims.sol/AttendanceClaims.json',
     },
   }
 

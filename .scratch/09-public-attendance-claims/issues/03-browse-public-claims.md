@@ -4,7 +4,7 @@
 **Spec:** [Feature 09: Opt-in public attendance claims](../spec.md)
 **What to build:** A read-only visitor can inspect confirmed public attendance associations for an event or wallet without treating them as evidence of funding or personal identity.
 **Blocked by:** [09.02 — Submit and enforce a unique public claim](02-submit-unique-public-claim.md).
-**Status:** ready-for-agent
+**Status:** implemented
 
 ## Acceptance criteria
 
@@ -19,3 +19,10 @@
 ## Scope
 
 No claim editing, deletion, transfer, private-attendee discovery, or additional indexer infrastructure. Claim submission already discloses the secret/path; browsing must not imply otherwise or add a secret-display feature. Reuse public state already established by claim submission.
+
+## Comments
+
+### Implementation — 2026-11-13
+- `attendanceClaims.ts::readPublicAttendanceClaimsByEvent` / `readPublicAttendanceClaimsByWallet` rebuild confirmed associations from `PublicAttendanceClaimed` logs only (no backend indexer), exposing wallet, proposal, and entry.
+- `application.ts::readPublicClaimsByEvent` / `readPublicClaimsByWallet` are wallet-free, deduplicate records on refresh, and surface unconfigured/transport failures instead of inventing history; only confirmed events appear, never pending or failed transactions.
+- `/attendance` provides event and wallet views with empty-history handling and explains that records are voluntary permanent associations from transferable organizer-attested credentials, not identity, exclusive possession, or proof of voting/payment. Raw secrets and paths are not displayed.
