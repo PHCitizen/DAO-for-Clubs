@@ -1,32 +1,11 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
-import {
-  type WalletState,
-  type NetworkState,
-  type PublicDeploymentStatus,
-} from '../application'
+import type { NetworkState, PublicDeploymentStatus, WalletState } from '../application'
 import { FundingPanel } from './-funding'
 import { app } from '../applicationInstance'
+import { useNetworkState, useWalletState } from '../walletState'
 
 export const Route = createFileRoute('/')({ component: Home })
-
-function useWalletState(): WalletState {
-  const [state, setState] = useState<WalletState>(() => app.readWalletAccount())
-  useEffect(() => {
-    setState(app.readWalletAccount())
-    return app.onWalletStateChanged(setState)
-  }, [])
-  return state
-}
-
-function useNetworkState(): NetworkState {
-  const [state, setState] = useState<NetworkState>(() => app.readNetworkState())
-  useEffect(() => {
-    setState(app.readNetworkState())
-    return app.onNetworkStateChanged(setState)
-  }, [])
-  return state
-}
 
 function Home() {
   const home = app.readHome()
@@ -72,12 +51,18 @@ function Home() {
       <h1 className="text-4xl font-bold tracking-tight">{home.title}</h1>
       <p className="mt-6 text-lg text-slate-600">{home.description}</p>
 
-      <div className="mt-8">
+      <div className="mt-8 flex flex-wrap gap-3">
         <Link
           to="/treasuries"
           className="inline-flex rounded-lg bg-emerald-700 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
         >
           Browse treasuries
+        </Link>
+        <Link
+          to="/testusd"
+          className="inline-flex rounded-lg border border-emerald-700 px-5 py-2 text-sm font-semibold text-emerald-700 hover:bg-emerald-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+        >
+          Mint TestUSD
         </Link>
       </div>
 

@@ -1,5 +1,5 @@
 import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
-import { decodeEventLog, encodeFunctionData, erc20Abi, isAddress, parseUnits, type Hash } from 'viem'
+import { decodeEventLog, erc20Abi, isAddress, parseUnits, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
   type Address,
@@ -9,6 +9,7 @@ import {
   WalletUnavailableError,
   NetworkSwitchRejectedError,
   NetworkSwitchError,
+  TransactionRejectedError,
   normalizeWalletError,
 } from './wallet.js'
 import {
@@ -25,6 +26,7 @@ import {
   DeploymentNotConfiguredError,
   ChainMismatchError,
   StaleActionConfigurationError,
+  RpcUnavailableError,
 } from './rpc.js'
 import {
   type TreasuryAbis,
@@ -33,6 +35,19 @@ import {
   createTreasuryReads,
   TreasuryChainMismatchError,
 } from './treasury.js'
+import {
+  type MintTestUsdOutcome,
+  type TestUsdChain,
+  type TestUsdConfig,
+  type TestUsdInfo,
+  type TestUsdTransactionReceipt,
+  mintTestUsd,
+  readTestUsdInfo,
+  TestUsdChainMismatchError,
+  TestUsdConfirmationError,
+  TestUsdMintRevertedError,
+  TestUsdSubmissionError,
+} from './testusd.js'
 
 // ---------------------------------------------------------------------------
 // Wallet connection and network state
@@ -195,6 +210,50 @@ export type TreasuryDetailResult =
     }
   | TreasuryReadFailure
 
+// ---------------------------------------------------------------------------
+// TestUSD metadata and minting results
+// ---------------------------------------------------------------------------
+
+export type TestUsdInfoResult =
+  | {
+      status: 'success'
+      chainId: number
+      testUsd: TestUsdInfo
+    }
+  | TreasuryReadFailure
+
+export type MintTestUsdFailure =
+  | {
+      status: 'wallet-not-connected'
+      message: string
+    }
+  | {
+      status: 'wallet-unavailable'
+      message: string
+    }
+  | {
+      status: 'wallet-rejected'
+      message: string
+    }
+  | {
+      status: 'stale-configuration'
+      message: string
+    }
+  | {
+      status: 'transaction-failed'
+      stage: 'submission' | 'reverted' | 'confirmation'
+      message: string
+      error: string
+      hash?: Hex
+    }
+
+export type MintTestUsdResult = MintTestUsdOutcome | MintTestUsdFailure | TreasuryReadFailure
+
+export interface MintTestUsdRequest {
+  recipient: string
+  amount: string
+}
+
 function toTreasuryReadFailure(error: unknown): TreasuryReadFailure {
   if (error instanceof TreasuryChainMismatchError) {
     return {
@@ -206,6 +265,108 @@ function toTreasuryReadFailure(error: unknown): TreasuryReadFailure {
   return {
     status: 'rpc-unavailable',
     message: 'Treasury reads could not reach the configured RPC endpoint.',
+    error: error instanceof Error ? error.message : String(error),
+  }
+}
+
+function toTestUsdReadFailure(error: unknown): TreasuryReadFailure {
+  if (error instanceof TestUsdChainMismatchError) {
+    return {
+      status: 'chain-mismatch',
+      expectedChainId: error.expectedChainId,
+      actualChainId: error.actualChainId,
+    }
+  }
+  return {
+    status: 'rpc-unavailable',
+    message: 'TestUSD reads could not reach the configured RPC endpoint.',
+    error: error instanceof Error ? error.message : String(error),
+  }
+}
+
+function toPreparedActionFailure(error: unknown): MintTestUsdFailure | TreasuryReadFailure {
+  if (error instanceof WalletNotConnectedError) {
+    return {
+      status: 'wallet-not-connected',
+      message: 'Connect the designated TestUSD administrator wallet to mint.',
+    }
+  }
+  if (error instanceof DeploymentNotDeployedError) {
+    return {
+      status: 'unconfigured',
+      message: 'The shared TestUSD contract is not deployed on the configured chain.',
+    }
+  }
+  if (error instanceof DeploymentNotConfiguredError) {
+    return {
+      status: 'unconfigured',
+      message: 'The deployment configuration is missing or invalid.',
+    }
+  }
+  if (error instanceof ChainMismatchError) {
+    return {
+      status: 'chain-mismatch',
+      expectedChainId: error.expectedChainId,
+      actualChainId: error.actualChainId,
+    }
+  }
+  if (error instanceof StaleActionConfigurationError) {
+    return { status: 'stale-configuration', message: error.message }
+  }
+  return {
+    status: 'transaction-failed',
+    stage: 'submission',
+    message: 'Minting could not be prepared.',
+    error: error instanceof Error ? error.message : String(error),
+  }
+}
+
+function toMintTestUsdFailure(error: unknown): MintTestUsdResult {
+  if (error instanceof StaleActionConfigurationError) {
+    return { status: 'stale-configuration', message: error.message }
+  }
+  if (error instanceof TestUsdChainMismatchError) {
+    return {
+      status: 'chain-mismatch',
+      expectedChainId: error.expectedChainId,
+      actualChainId: error.actualChainId,
+    }
+  }
+  if (error instanceof TestUsdMintRevertedError) {
+    return {
+      status: 'transaction-failed',
+      stage: 'reverted',
+      message: 'The mint transaction reverted on-chain. No currency was minted.',
+      error: error.message,
+      hash: error.hash,
+    }
+  }
+  if (error instanceof TestUsdConfirmationError) {
+    return {
+      status: 'transaction-failed',
+      stage: 'confirmation',
+      message: error.message,
+      error: error.message,
+      ...(error.hash === null ? {} : { hash: error.hash }),
+    }
+  }
+  if (error instanceof TestUsdSubmissionError) {
+    if (error.cause instanceof TransactionRejectedError) {
+      return {
+        status: 'wallet-rejected',
+        message: 'The mint transaction was rejected in your wallet. Nothing was submitted.',
+      }
+    }
+    return {
+      status: 'transaction-failed',
+      stage: 'submission',
+      message: 'The mint transaction was not submitted.',
+      error: error.message,
+    }
+  }
+  return {
+    status: 'rpc-unavailable',
+    message: 'TestUSD minting could not reach the configured RPC endpoint.',
     error: error instanceof Error ? error.message : String(error),
   }
 }
@@ -252,6 +413,8 @@ export function createApplication(
     }
   }
 
+  const publicAbis = publicArtifacts.abis as unknown as TreasuryAbis
+
   const treasuryReads: TreasuryReads | null =
     rpc?.readContract && deploymentContext.daoAddress
       ? createTreasuryReads(
@@ -263,9 +426,42 @@ export function createApplication(
           {
             chainId: deploymentContext.chainId,
             daoAddress: deploymentContext.daoAddress,
-            abis: publicArtifacts.abis as unknown as TreasuryAbis,
+            abis: publicAbis,
           }
         )
+      : null
+
+  const testUsdConfig: TestUsdConfig | null = deploymentContext.testUsdAddress
+    ? {
+        chainId: deploymentContext.chainId,
+        testUsdAddress: deploymentContext.testUsdAddress,
+        abi: publicAbis.TestUSD,
+      }
+    : null
+
+  const testUsdChain: TestUsdChain | null =
+    rpc?.readContract && testUsdConfig
+      ? {
+          getChainId: () => rpc!.getChainId(),
+          readContract: <T>(request: Parameters<NonNullable<RpcAdapter['readContract']>>[0]) =>
+            rpc!.readContract!<T>(request),
+          sendTransaction: async (request) => {
+            if (!adapter) throw new WalletUnavailableError()
+            return adapter.sendTransaction({
+              from: request.from,
+              to: request.address,
+              abi: request.abi,
+              functionName: request.functionName,
+              args: request.args,
+            })
+          },
+          waitForTransactionReceipt: (hash: Hex): Promise<TestUsdTransactionReceipt> => {
+            if (!rpc!.waitForTransactionReceipt) {
+              throw new RpcUnavailableError('Transaction confirmation is not available.')
+            }
+            return rpc!.waitForTransactionReceipt(hash)
+          },
+        }
       : null
 
   // Mutable wallet state kept inside the closure; listeners notify subscribers.
@@ -403,7 +599,7 @@ export function createApplication(
         prepared.assertValid()
         if (!adapter?.sendTransaction || await adapter.getAccount() !== sender || await adapter.getChainId() !== deploymentContext.chainId) throw new Error('Wallet configuration changed or cannot submit transactions.')
         prepared.assertValid()
-        const hash = await adapter.sendTransaction({ account: sender, to: balances.asset, data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [treasury, units] }) })
+        const hash = await adapter.sendTransaction({ from: sender, to: balances.asset, abi: erc20Abi, functionName: 'transfer', args: [treasury, units] })
         emitFunding({ status: 'pending', ...request, hash })
         const receipt = await rpc!.contracts!.waitForReceipt(hash)
         if (receipt.status !== 'success') throw new Error('Funding transaction reverted.')
@@ -568,6 +764,67 @@ export function createApplication(
         }
       } catch (err) {
         return toTreasuryReadFailure(err)
+      }
+    },
+
+    /**
+     * Reads the shared TestUSD identity, symbol, decimals, and designated
+     * currency administrator without requiring a wallet.
+     */
+    async readTestUsd(): Promise<TestUsdInfoResult> {
+      if (!testUsdChain || !testUsdConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'TestUSD metadata requires a configured shared token deployment and RPC endpoint.',
+        }
+      }
+      try {
+        const testUsd = await readTestUsdInfo(testUsdChain, testUsdConfig)
+        return {
+          status: 'success',
+          chainId: deploymentContext.chainId,
+          testUsd,
+        }
+      } catch (err) {
+        return toTestUsdReadFailure(err)
+      }
+    },
+
+    /**
+     * Sends a mint through the connected authorized wallet, waits for its
+     * confirmation, decodes the actual minted amount, and reads the updated
+     * recipient balance.
+     */
+    async mintTestUsd(request: MintTestUsdRequest): Promise<MintTestUsdResult> {
+      if (!testUsdChain || !testUsdConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'TestUSD minting requires a configured shared token deployment and RPC endpoint.',
+        }
+      }
+      if (!adapter) {
+        return {
+          status: 'wallet-unavailable',
+          message: 'No wallet extension is available to sign the mint transaction.',
+        }
+      }
+
+      let prepared
+      try {
+        prepared = await this.prepareDeploymentAction({ target: 'testUsd' })
+      } catch (err) {
+        return toPreparedActionFailure(err)
+      }
+
+      try {
+        prepared.assertValid()
+        return await mintTestUsd(testUsdChain, testUsdConfig, {
+          from: prepared.context.account,
+          recipient: request.recipient,
+          amount: request.amount,
+        })
+      } catch (err) {
+        return toMintTestUsdFailure(err)
       }
     },
 

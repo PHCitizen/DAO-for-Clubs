@@ -1,6 +1,7 @@
-import { createPublicClient, erc20Abi, http, parseAbi, type Abi, type Hash, type PublicClient, type TransactionReceipt } from 'viem'
+import { createPublicClient, erc20Abi, http, parseAbi, type Abi, type Hash, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import type { Address } from './wallet.js'
 import type { ContractReadRequest } from './treasury.js'
+import type { TestUsdTransactionReceipt } from './testusd.js'
 
 // ---------------------------------------------------------------------------
 // Domain errors
@@ -79,6 +80,11 @@ export interface RpcAdapter {
    * unconfigured state when no contract reader is available.
    */
   readContract?<T = unknown>(request: ContractReadRequest): Promise<T>
+  /**
+   * Waits for a submitted transaction to be included and returns its confirmed
+   * status, block, and logs. Optional for read-only transport stubs.
+   */
+  waitForTransactionReceipt?(hash: Hex): Promise<TestUsdTransactionReceipt>
 }
 
 export interface FundingContractOperations {
@@ -100,6 +106,14 @@ export function createRpcAdapter(client: Pick<PublicClient, 'getChainId' | 'getB
   return {
     getChainId: () => withRpcError(() => client.getChainId()),
     getBlockNumber: () => withRpcError(() => client.getBlockNumber()),
+    waitForTransactionReceipt: hash => withRpcError(async () => {
+      const receipt = await client.waitForTransactionReceipt({ hash })
+      return {
+        status: receipt.status,
+        blockNumber: receipt.blockNumber,
+        logs: receipt.logs.map(log => ({ address: log.address, data: log.data, topics: log.topics })),
+      }
+    }),
     readContract: <T = unknown>(request: ContractReadRequest): Promise<T> => withRpcError(async () =>
       await client.readContract(request as { address: Address; abi: Abi; functionName: string; args?: readonly unknown[] }) as T
     ),

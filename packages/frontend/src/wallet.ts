@@ -1,3 +1,4 @@
+import { encodeFunctionData, type Abi, type Hex } from 'viem'
 import { getSupportedChain } from './networks.js'
 
 /**
@@ -20,8 +21,15 @@ export interface ChainChangedEvent {
 
 export type ChainChangedListener = (event: ChainChangedEvent) => void
 
+export interface ContractWriteRequest {
+  from: Address
+  to: Address
+  abi: Abi
+  functionName: string
+  args?: readonly unknown[]
+}
+
 export interface WalletAdapter {
-  sendTransaction?(transaction: { account: Address; to: Address; data: `0x${string}` }): Promise<`0x${string}`>
   /** Request the user to connect. Resolves with the first selected address. */
   connect(): Promise<Address>
   /** Disconnect / clear the session. */
@@ -36,6 +44,11 @@ export interface WalletAdapter {
   onChainChanged(listener: ChainChangedListener): () => void
   /** Request the wallet to switch to the specified chain ID. */
   switchChain(chainId: number): Promise<void>
+  /**
+   * Ask the connected wallet to sign and submit a contract call.
+   * Resolves with the transaction hash; never signs with an embedded key.
+   */
+  sendTransaction(request: ContractWriteRequest): Promise<Hex>
   /** True when a compatible EIP-1193 provider is available in the browser. */
   isAvailable(): boolean
 }
@@ -63,11 +76,6 @@ function getProvider(): Eip1193Provider | undefined {
  */
 export function createBrowserWalletAdapter(): WalletAdapter {
   return {
-    async sendTransaction({ account, to, data }) {
-      const provider = getProvider()
-      if (!provider) throw new WalletUnavailableError()
-      return await provider.request({ method: 'eth_sendTransaction', params: [{ from: account, to, data }] }) as `0x${string}`
-    },
     isAvailable() {
       return getProvider() !== undefined
     },
@@ -187,6 +195,36 @@ export function createBrowserWalletAdapter(): WalletAdapter {
         throw new NetworkSwitchError(err instanceof Error ? err.message : String(err))
       }
     },
+
+    async sendTransaction(request: ContractWriteRequest): Promise<Hex> {
+      const provider = getProvider()
+      if (!provider) throw new WalletUnavailableError()
+
+      const data = encodeFunctionData({
+        abi: request.abi,
+        functionName: request.functionName,
+        args: request.args,
+      })
+
+      try {
+        const hash = await provider.request({
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              from: request.from,
+              to: request.to,
+              data,
+            },
+          ],
+        })
+        return hash as Hex
+      } catch (err: unknown) {
+        if (err && typeof err === 'object' && 'code' in err && (err as { code: number }).code === 4001) {
+          throw new TransactionRejectedError()
+        }
+        throw new TransactionSubmissionError(err instanceof Error ? err.message : String(err))
+      }
+    },
   }
 }
 
@@ -234,6 +272,22 @@ export class NetworkSwitchError extends Error {
   }
 }
 
+export class TransactionRejectedError extends Error {
+  readonly kind = 'transaction-rejected' as const
+  constructor() {
+    super('Transaction request was rejected. You can try again.')
+    this.name = 'TransactionRejectedError'
+  }
+}
+
+export class TransactionSubmissionError extends Error {
+  readonly kind = 'transaction-submission-error' as const
+  constructor(message: string) {
+    super(message)
+    this.name = 'TransactionSubmissionError'
+  }
+}
+
 export class UnsupportedChainError extends Error {
   readonly kind = 'unsupported-chain' as const
   readonly chainId: number
@@ -251,6 +305,8 @@ export type DomainWalletError =
   | NetworkSwitchRejectedError
   | NetworkSwitchError
   | UnsupportedChainError
+  | TransactionRejectedError
+  | TransactionSubmissionError
 
 /** Normalize raw wallet errors to domain errors. */
 export function normalizeWalletError(err: unknown): DomainWalletError {
@@ -260,7 +316,9 @@ export function normalizeWalletError(err: unknown): DomainWalletError {
     err instanceof WalletConnectError ||
     err instanceof NetworkSwitchRejectedError ||
     err instanceof NetworkSwitchError ||
-    err instanceof UnsupportedChainError
+    err instanceof UnsupportedChainError ||
+    err instanceof TransactionRejectedError ||
+    err instanceof TransactionSubmissionError
   ) {
     return err
   }

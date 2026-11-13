@@ -33,7 +33,7 @@ test('application funding validates deployment and amounts, tracks transactions 
           gas: 100000n,
           data: encodeFunctionData({ abi: erc20Abi, functionName: 'transfer', args: [treasuries[0], 1000n * 10n ** 18n] }),
         })
-        return f.walletClients[1].sendTransaction({ ...tx, chain: f.walletClients[1].chain, account: f.accounts[1] })
+        return f.walletClients[1].sendTransaction({ to: tx.to, data: encodeFunctionData(tx), chain: f.walletClients[1].chain, account: f.accounts[1] })
       },
     }
     const rpc = createRpcAdapter(f.publicClient)
@@ -132,7 +132,7 @@ test('application funding validates deployment and amounts, tracks transactions 
         sendTransaction: async tx => {
           const nonce = await f.publicClient.getTransactionCount({ address: f.accounts[1] })
           await provider.request({ method: 'evm_setAutomine', params: [false] })
-          const original = { ...tx, account: f.accounts[1], chain: f.walletClients[1].chain, nonce, gas: 100000n, gasPrice: 2000000000n }
+          const original = { to: tx.to, data: encodeFunctionData(tx), account: f.accounts[1], chain: f.walletClients[1].chain, nonce, gas: 100000n, gasPrice: 2000000000n }
           originalHash = await f.walletClients[1].sendTransaction(original)
           replace = async () => {
             const changes = replacement === 'cancelled'
