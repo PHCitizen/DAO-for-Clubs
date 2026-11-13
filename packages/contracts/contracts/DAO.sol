@@ -13,6 +13,11 @@ error ProposalNotFound();
 error VotingClosed();
 error BallotAlreadyCast();
 error NotVotingNftHolder();
+error InsufficientYesVotes();
+error NotProposalCreator();
+error ProposalNotPassed();
+error FundsAlreadyReleased();
+error ReentrantCall();
 
 /**
  * @title DAO
@@ -60,6 +65,19 @@ contract DAO {
     event YesVoteCast(uint256 indexed proposalId, uint256 indexed tokenId, address indexed voter);
     event NoVoteCast(uint256 indexed proposalId, uint256 indexed tokenId, address indexed voter);
     event ProposalPassed(uint256 indexed proposalId);
+
+    /// True once a proposal's fixed allocation has actually been paid; set exactly once.
+    mapping(uint256 => bool) public fundsReleased;
+    /// True only while the latest release attempt had sufficient balance but the asset refused the transfer; cleared by a later shortage or a successful payment.
+    mapping(uint256 => bool) public paymentFailed;
+    bool private _releasing;
+
+    /// Emitted only when TestUSD actually moved to the proposal's fixed recipient.
+    event FundsReleased(uint256 indexed proposalId, address indexed treasury, address indexed recipient, uint256 amount);
+    /// Emitted when a release request found the treasury unable to pay; nothing moved and nothing was marked paid.
+    event FundingShortage(uint256 indexed proposalId, uint256 available, uint256 required);
+    /// Emitted when the balance sufficed but the asset's transfer failed; the payment was rolled back and the proposal stays retryable.
+    event FundsTransferFailed(uint256 indexed proposalId, address indexed treasury, uint256 amount);
 
     event TreasuryCreated(address indexed treasury, address indexed administrator);
     event ProposalCreated(
@@ -197,14 +215,33 @@ contract DAO {
         _recordPassingIfQualified(proposalId);
     }
 
+    /**
+     * @notice Permissionless passing check, reusable by fund release.
+     * Records the same passing result as a qualifying ballot without requiring
+     * a new vote; used after membership changes make retained yes votes
+     * sufficient under the current threshold. Requires an open vote (not yet
+     * passed, and before the deadline) and sufficient recorded yes votes
+     * under the current supply. Passing never touches treasury funds.
+     */
+    function checkPassing(uint256 proposalId) external returns (bool passingRecorded) {
+        _requireOpenVote(proposalId);
+        if (_voting[proposalId].yesVotes < _yesThreshold(proposalId)) revert InsufficientYesVotes();
+        return _recordPassingIfQualified(proposalId);
+    }
+
+    /// @dev True while a proposal is neither already passed nor past its deadline.
+    function _votingOpen(uint256 proposalId) internal view returns (bool) {
+        return !_voting[proposalId].passingRecorded && block.timestamp < _proposals[proposalId].votingDeadline;
+    }
+
     /// @dev Shared open-vote guard for later ballot and passing-check actions.
     function _requireOpenVote(uint256 proposalId) internal view returns (Proposal storage proposal) {
         if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
         proposal = _proposals[proposalId];
-        if (_voting[proposalId].passingRecorded || block.timestamp >= proposal.votingDeadline) revert VotingClosed();
+        if (!_votingOpen(proposalId)) revert VotingClosed();
     }
 
-    /// @dev Call only after the open-vote guard. Passing never touches funds.
+    /// @dev Call only once the vote is confirmed open (via `_requireOpenVote` or `_votingOpen`). Passing never touches funds.
     function _recordPassingIfQualified(uint256 proposalId) internal returns (bool) {
         VotingResult storage result = _voting[proposalId];
         if (!result.passingRecorded && result.yesVotes >= _yesThreshold(proposalId)) {
@@ -212,6 +249,57 @@ contract DAO {
             emit ProposalPassed(proposalId);
         }
         return result.passingRecorded;
+    }
+
+    /**
+     * @notice Creator-controlled payment of a passed proposal's fixed allocation.
+     * Only the recorded creator may call; payment goes to the immutable payout
+     * recipient and amount. While voting is still open, this first applies the
+     * same live-threshold passing rule as `checkPassing`, so a qualifying
+     * request need not be preceded by a separate passing transaction; that
+     * recorded result persists even if payment cannot proceed. A passing
+     * result (recorded here or earlier) remains payable after vote close; a
+     * proposal that never passed is not. The actual treasury balance at
+     * execution decides: a shortage does not revert, it emits FundingShortage,
+     * moves nothing and leaves the proposal unpaid and retryable; an asset that
+     * fails the transfer likewise rolls back and emits FundsTransferFailed. A receipt is
+     * therefore not proof of payment; look for FundsReleased / fundsReleased.
+     * @return paid True only if TestUSD actually moved.
+     */
+    function releaseFunds(uint256 proposalId) external returns (bool paid) {
+        if (_releasing) revert ReentrantCall();
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
+        Proposal storage proposal = _proposals[proposalId];
+        if (msg.sender != proposal.creator) revert NotProposalCreator();
+        VotingResult storage result = _voting[proposalId];
+        if (_votingOpen(proposalId)) {
+            _recordPassingIfQualified(proposalId);
+        }
+        if (!result.passingRecorded) revert ProposalNotPassed();
+        if (fundsReleased[proposalId]) revert FundsAlreadyReleased();
+
+        uint256 available = IERC20Token(testUsd).balanceOf(proposal.treasury);
+        if (available < proposal.amount) {
+            // The latest attempt is a shortage, not a refused transfer: no stale failure state.
+            paymentFailed[proposalId] = false;
+            emit FundingShortage(proposalId, available, proposal.amount);
+            return false;
+        }
+
+        // Checks-effects-interactions plus a lock: state is final before funds move.
+        _releasing = true;
+        fundsReleased[proposalId] = true;
+        try Treasury(proposal.treasury).releaseFunds(proposal.payoutRecipient, proposal.amount) {
+            paymentFailed[proposalId] = false;
+            emit FundsReleased(proposalId, proposal.treasury, proposal.payoutRecipient, proposal.amount);
+            paid = true;
+        } catch {
+            // The asset refused the transfer: undo, so a failed transfer is never paid state.
+            fundsReleased[proposalId] = false;
+            paymentFailed[proposalId] = true;
+            emit FundsTransferFailed(proposalId, proposal.treasury, proposal.amount);
+        }
+        _releasing = false;
     }
 
     function _yesThreshold(uint256 proposalId) internal view returns (uint256) {

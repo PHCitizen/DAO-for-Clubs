@@ -1,5 +1,6 @@
 import { createApplication, type Application } from './application'
 import { createBrowserCameraScanner } from './browserCamera'
+import { browserAttendanceStorage } from './browserStorage'
 import { createPinataIpfsTransport } from './ipfs'
 import { createBrowserWalletAdapter } from './wallet'
 
@@ -13,4 +14,5 @@ import { createBrowserWalletAdapter } from './wallet'
 export const app: Application = createApplication(createBrowserWalletAdapter(), undefined, undefined, {
   ipfs: createPinataIpfsTransport(),
   camera: createBrowserCameraScanner(),
+  attendanceStorage: browserAttendanceStorage(),
 })

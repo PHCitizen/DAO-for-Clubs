@@ -1,5 +1,15 @@
 import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
-import { castVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError, type VotingProgress } from './voting.js'
+import {
+  castVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError,
+  checkProposalPassing, PassingCheckSubmissionError, PassingCheckRevertedError, PassingCheckConfirmationError,
+  type VotingProgress,
+} from './voting.js'
+import { readPublicBallots, type Ballot, type BallotLogsChain } from './ballots.js'
+import {
+  readProposalFunding, releaseProposalFunds, describeFunding, describeReleaseOutcome, CHAIN_MISMATCH_MESSAGE,
+  FundReleaseSubmissionError, FundReleaseRevertedError, FundReleaseConfirmationError,
+  type ProposalFunding,
+} from './release.js'
 import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
@@ -89,6 +99,7 @@ import {
   type AttendanceScanSession,
   type CameraScanner,
 } from './attendanceScan.js'
+import { createAttendanceStore, type AttendanceStorage } from './attendanceStorage.js'
 import {
   type IpfsCredentials,
   type IpfsTransport,
@@ -740,6 +751,8 @@ export type AttendanceCredentialResult =
 export interface ApplicationOptions {
   /** Camera transport for organizer attendance scanning; omit when no camera exists. */
   camera?: CameraScanner
+  /** Browser storage that keeps organizer attendance across reloads; omit when unavailable. */
+  attendanceStorage?: AttendanceStorage
   /** IPFS transport used for proposal pinning; omit to disable pinning. */
   ipfs?: IpfsTransport
 }
@@ -838,11 +851,53 @@ export type VotingReadResult =
   | { status: 'not-found'; id: bigint }
   | TreasuryReadFailure
 
+/**
+ * Public ballot listing: identities, token IDs, and choices only. Deliberately
+ * disjoint from funding (`FundingBalances`/`FundingState`) and attendance
+ * (`AttendanceCredentialResult`/`AttendanceCollection`) shapes so a viewer of
+ * this read can never infer payment or attendance status from it.
+ */
+export type BallotListResult =
+  | { status: 'success'; chainId: number; ballots: Ballot[] }
+  | { status: 'not-found'; id: bigint }
+  | TreasuryReadFailure
+
 export type VoteResult =
   | { status: 'confirmed'; hash: Hex; progress: VotingProgress | null }
   | { status: 'invalid-input'; message: string }
   | TransactionActionFailure
   | TreasuryReadFailure
+
+/** Result of the permissionless passing check: a vote-passing determination, never a payout or administrative approval. */
+export type CheckPassingResult =
+  | { status: 'confirmed'; hash: Hex; progress: VotingProgress | null }
+  | { status: 'invalid-input'; message: string }
+  | TransactionActionFailure
+  | TreasuryReadFailure
+
+/** A funding read plus what to show: the status line and whether the release action is offered. */
+export type FundingReadResult = (
+  | { status: 'success'; funding: ProposalFunding }
+  | { status: 'not-found'; id: bigint }
+  | TreasuryReadFailure
+) & { statusText: string; canRelease: boolean }
+
+/**
+ * Release request outcome. Only `confirmed` means TestUSD moved; `funds-pending`
+ * is a successful receipt in which nothing was paid (treasury shortage or the
+ * asset refused the transfer; passing is kept). Every result carries a
+ * display-ready `message`; paid/pending results carry the refreshed funding view.
+ */
+export type ReleaseFundsResult =
+  | { status: 'confirmed' | 'funds-pending'; hash: Hex; message: string; funding: FundingReadResult }
+  | (ReleaseFailure & { message: string })
+
+type ReleaseFailure = { status: 'invalid-input'; message: string } | TransactionActionFailure | TreasuryReadFailure
+type ReleaseSubmission = ReleaseFailure | Awaited<ReturnType<typeof releaseProposalFunds>>
+
+function fundingSuccess(funding: ProposalFunding): FundingReadResult {
+  return { status: 'success', funding, ...describeFunding(funding) }
+}
 
 /** Number of proposal records fetched at once when listing (keeps RPC load bounded). */
 const PROPOSAL_LIST_BATCH_SIZE = 10
@@ -1012,6 +1067,12 @@ export function createApplication(
               throw new RpcUnavailableError('Transaction confirmation is not available.')
             }
             return rpc!.waitForTransactionReceipt(hash)
+          },
+          getLogs: (request: Parameters<NonNullable<RpcAdapter['getLogs']>>[0]) => {
+            if (!rpc!.getLogs) {
+              throw new RpcUnavailableError('Event log queries are not available.')
+            }
+            return rpc!.getLogs(request)
           },
         }
       : null
@@ -1256,6 +1317,24 @@ export function createApplication(
       } catch (error) { return toProposalReadFailure(error) }
     },
 
+    /**
+     * Wallet-free public ballot inspection: rebuilds every cast ballot for a
+     * proposal from `YesVoteCast`/`NoVoteCast` logs (no backend indexer).
+     * Historical ballots tied to since-burned tokens remain in the listing,
+     * because the log record is append-only and independent of current
+     * ownership. Reuses `readVoting`'s totals/threshold/outcome rather than
+     * re-deriving them from these logs.
+     */
+    async readBallots(proposalId: bigint): Promise<BallotListResult> {
+      if (!proposalChain || !proposalConfig || !proposalChain.getLogs) return { status: 'unconfigured', message: 'Ballot inspection requires a configured DAO and RPC endpoint.' }
+      try {
+        const terms = await readProposalTerms(proposalChain, proposalConfig, proposalId)
+        if (terms === null) return { status: 'not-found', id: proposalId }
+        const ballots = await readPublicBallots(proposalChain as ProposalChain & BallotLogsChain, proposalConfig, proposalId)
+        return { status: 'success', chainId: proposalConfig.chainId, ballots }
+      } catch (error) { return toProposalReadFailure(error) }
+    },
+
     async voteYes(proposalId: bigint, tokenId: bigint): Promise<VoteResult> {
       return this.submitVote(proposalId, tokenId, 'yes')
     },
@@ -1291,6 +1370,98 @@ export function createApplication(
           submissionMessage: `The ${choice} vote was not submitted. Check ownership, token consumption, and whether voting is still open.`,
         })
       }
+    },
+
+    /**
+     * Permissionless passing check: anyone can submit it to record passing from
+     * already-cast yes votes once burns make them sufficient under the current
+     * threshold, without casting a new ballot. This is a vote-passing
+     * determination only: it does not release funds and is not an
+     * administrative approval.
+     */
+    async checkPassing(proposalId: bigint): Promise<CheckPassingResult> {
+      if (proposalId <= 0n || proposalId >= 2n ** 256n) return { status: 'invalid-input', message: 'Enter a valid positive proposal ID.' }
+      if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'The passing check requires a configured DAO and RPC endpoint.' }
+      if (!adapter) return { status: 'wallet-unavailable', message: 'No wallet extension is available.' }
+      if (walletState.status !== 'connected') return { status: 'wallet-not-connected', message: 'Connect a wallet to submit the passing check.' }
+      try {
+        const prepared = await this.prepareDeploymentAction({ target: 'dao' })
+        return await checkProposalPassing(proposalChain, proposalConfig, { from: prepared.context.account, proposalId }, async () => {
+          const [account, chainId] = await Promise.all([adapter.getAccount(), adapter.getChainId()])
+          if (chainId !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, chainId ?? 0)
+          if (account?.toLowerCase() !== prepared.context.account.toLowerCase()) throw new StaleActionConfigurationError()
+          prepared.assertValid()
+        })
+      } catch (error) {
+        if (error instanceof ChainMismatchError) return { status: 'chain-mismatch', expectedChainId: error.expectedChainId, actualChainId: error.actualChainId }
+        if (error instanceof WalletNotConnectedError) return { status: 'wallet-not-connected', message: 'Connect a wallet to submit the passing check.' }
+        if (error instanceof DeploymentNotDeployedError || error instanceof DeploymentNotConfiguredError) return { status: 'unconfigured', message: error.message }
+        return toTransactionFailure(error, {
+          ChainMismatchError: ProposalChainMismatchError,
+          RevertedError: PassingCheckRevertedError, ConfirmationError: PassingCheckConfirmationError, SubmissionError: PassingCheckSubmissionError,
+        }, {
+          revertedMessage: 'The passing check reverted. No passing was recorded.',
+          rpcUnavailableMessage: 'The passing check could not reach the configured RPC endpoint.',
+          rejectedMessage: 'The passing check was rejected in your wallet. Nothing was submitted.',
+          submissionMessage: 'The passing check was not submitted. Check recorded yes votes, current supply, and whether voting is still open.',
+        })
+      }
+    },
+
+    async readFunding(proposalId: bigint): Promise<FundingReadResult> {
+      if (!proposalChain || !proposalConfig) {
+        return { status: 'unconfigured', message: 'Funding requires a configured DAO and RPC endpoint.', statusText: 'Funding status unavailable.', canRelease: false }
+      }
+      try {
+        const funding = await readProposalFunding(proposalChain, proposalConfig, proposalId)
+        return funding
+          ? fundingSuccess(funding)
+          : { status: 'not-found', id: proposalId, statusText: 'Proposal not found: no funding to show.', canRelease: false }
+      } catch (error) {
+        return { ...toProposalReadFailure(error), statusText: 'Funding status unavailable.', canRelease: false }
+      }
+    },
+
+    /**
+     * Creator-controlled payment of a passed proposal's fixed allocation, also
+     * available after vote close. Reports `confirmed` only when funds moved.
+     */
+    async releaseFunds(proposalId: bigint): Promise<ReleaseFundsResult> {
+      const submit = async (): Promise<ReleaseSubmission> => {
+        if (proposalId <= 0n || proposalId >= 2n ** 256n) return { status: 'invalid-input', message: 'Enter a valid positive proposal ID.' }
+        if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'Fund release requires a configured DAO and RPC endpoint.' }
+        if (!adapter) return { status: 'wallet-unavailable', message: 'No wallet extension is available.' }
+        if (walletState.status !== 'connected') return { status: 'wallet-not-connected', message: 'Connect the proposal creator wallet.' }
+        try {
+          const prepared = await this.prepareDeploymentAction({ target: 'dao' })
+          return await releaseProposalFunds(proposalChain, proposalConfig, { from: prepared.context.account, proposalId }, async () => {
+            const [account, chainId] = await Promise.all([adapter.getAccount(), adapter.getChainId()])
+            if (chainId !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, chainId ?? 0)
+            if (account?.toLowerCase() !== prepared.context.account.toLowerCase()) throw new StaleActionConfigurationError()
+            prepared.assertValid()
+          })
+        } catch (error) {
+          if (error instanceof ChainMismatchError) return { status: 'chain-mismatch', expectedChainId: error.expectedChainId, actualChainId: error.actualChainId }
+          if (error instanceof WalletNotConnectedError) return { status: 'wallet-not-connected', message: 'Connect the proposal creator wallet.' }
+          if (error instanceof DeploymentNotDeployedError || error instanceof DeploymentNotConfiguredError) return { status: 'unconfigured', message: error.message }
+          return toTransactionFailure(error, {
+            ChainMismatchError: ProposalChainMismatchError,
+            RevertedError: FundReleaseRevertedError, ConfirmationError: FundReleaseConfirmationError, SubmissionError: FundReleaseSubmissionError,
+          }, {
+            revertedMessage: 'The fund release reverted. Nothing was paid.',
+            rpcUnavailableMessage: 'The fund release could not reach the configured RPC endpoint.',
+            rejectedMessage: 'The fund release was rejected in your wallet. Nothing was submitted.',
+            submissionMessage: 'The fund release was not submitted. Only the proposal creator can release funds for a passed proposal that is not yet paid.',
+          })
+        }
+      }
+      const submitted = await submit()
+      if ('funding' in submitted) {
+        // The receipt already settled the outcome; a failed refresh only affects the funding view.
+        const funding = submitted.funding ? fundingSuccess(submitted.funding) : await this.readFunding(proposalId)
+        return { status: submitted.status, hash: submitted.hash, message: describeReleaseOutcome(submitted.status, submitted.hash, submitted.reason), funding }
+      }
+      return 'message' in submitted ? submitted : { ...submitted, message: CHAIN_MISMATCH_MESSAGE }
     },
 
     // -----------------------------------------------------------------------
@@ -2238,7 +2409,7 @@ export function createApplication(
       const key = attendanceEventKey(event)
       let collection = attendanceCollections.get(key)
       if (!collection) {
-        collection = createAttendanceCollection(event)
+        collection = createAttendanceCollection(event, createAttendanceStore(options.attendanceStorage, event))
         attendanceCollections.set(key, collection)
       }
       const creator = proposal.creator.toLowerCase()

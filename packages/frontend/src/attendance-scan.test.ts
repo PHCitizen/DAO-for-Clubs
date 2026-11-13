@@ -4,6 +4,7 @@ import { createApplication } from './application'
 import { createBrowserCameraScanner } from './browserCamera'
 import { REPEAT_DETECTION_WINDOW_MS, CameraError, type CameraScanner } from './attendanceScan'
 import { encodeAttendanceQr } from './attendance'
+import type { AttendanceStorage } from './attendanceStorage'
 import type { RpcAdapter } from './rpc'
 import type { WalletAdapter } from './wallet'
 
@@ -42,7 +43,7 @@ function fakeCamera(failure?: CameraError) {
   return { camera, scan: (payload: string) => emit(payload), stop }
 }
 
-function setup(options: { account?: Address | null; creator?: Address; camera?: CameraScanner; accountChanged?: { fire?: (account: Address) => void } } = {}) {
+function setup(options: { account?: Address | null; creator?: Address; camera?: CameraScanner; accountChanged?: { fire?: (account: Address) => void }; storage?: AttendanceStorage; chainId?: number; dao?: Address; proposalId?: bigint } = {}) {
   const account = options.account === undefined ? ORGANIZER : options.account
   const sendTransaction = vi.fn()
   const wallet = {
@@ -50,7 +51,7 @@ function setup(options: { account?: Address | null; creator?: Address; camera?: 
     connect: async () => account,
     disconnect: async () => {},
     getAccount: async () => account,
-    getChainId: async () => 31337,
+    getChainId: async () => options.chainId ?? 31337,
     onAccountChanged: (handler: (event: { account: Address | null }) => void) => {
       if (options.accountChanged) options.accountChanged.fire = account => handler({ account })
       return () => {}
@@ -61,17 +62,17 @@ function setup(options: { account?: Address | null; creator?: Address; camera?: 
     signMessage: vi.fn(),
   } as unknown as WalletAdapter
   const readContract = vi.fn(async (request: { functionName: string }) => {
-    if (request.functionName === 'proposalCount') return 1n
+    if (request.functionName === 'proposalCount') return 5n
     if (request.functionName === 'getProposal') {
       return {
-        id: 1n, treasury: TOKEN, creator: options.creator ?? ORGANIZER, amount: 5n,
+        id: options.proposalId ?? 1n, treasury: TOKEN, creator: options.creator ?? ORGANIZER, amount: 5n,
         payoutRecipient: ORGANIZER, votingDeadline: 99n, documentReference: 'ipfs://x',
       }
     }
     throw new Error(`unexpected read ${request.functionName}`)
   })
-  const rpc = { getChainId: async () => 31337, readContract } as unknown as RpcAdapter
-  const app = createApplication(wallet, rpc, { chainId: 31337, daoAddress: DAO, testUsdAddress: TOKEN }, { camera: options.camera })
+  const rpc = { getChainId: async () => options.chainId ?? 31337, readContract } as unknown as RpcAdapter
+  const app = createApplication(wallet, rpc, { chainId: options.chainId ?? 31337, daoAddress: options.dao ?? DAO, testUsdAddress: TOKEN }, { camera: options.camera, attendanceStorage: options.storage })
   return { app, sendTransaction }
 }
 
@@ -79,7 +80,7 @@ async function start(options: Parameters<typeof setup>[0] = {}) {
   const cam = fakeCamera()
   const env = setup({ camera: cam.camera, ...options })
   await env.app.connect()
-  const result = await env.app.startAttendanceScan({ proposalId: 1n })
+  const result = await env.app.startAttendanceScan({ proposalId: options.proposalId ?? 1n })
   if (result.status !== 'scanning') throw new Error(`expected scanning, got ${result.status}`)
   return { ...env, cam, session: result.session }
 }
@@ -90,6 +91,7 @@ test('the proposal creator scans a valid QR; it is accepted and counted with the
     event: { chainId: 31337, daoAddress: DAO, proposalId: 1n },
     count: 0,
     entries: [],
+    storage: { status: 'unavailable', message: expect.any(String) },
   })
 
   cam.scan(qr({ entry: ENTRY_A }))
@@ -180,7 +182,7 @@ test('payloads carrying secret-bearing or identity fields are rejected, not sile
 test('the collection holds only hashed entries and event context', async () => {
   const { cam, session } = await start()
   cam.scan(qr())
-  expect(Object.keys(session.read()).sort()).toEqual(['count', 'entries', 'event'])
+  expect(Object.keys(session.read()).sort()).toEqual(['count', 'entries', 'event', 'storage'])
   expect(Object.keys(session.read().event).sort()).toEqual(['chainId', 'daoAddress', 'proposalId'])
 })
 
@@ -198,7 +200,7 @@ test('unknown proposals and invalid IDs do not start scanning', async () => {
   const cam = fakeCamera()
   const { app } = setup({ camera: cam.camera })
   await app.connect()
-  expect(await app.startAttendanceScan({ proposalId: 2n })).toMatchObject({ status: 'not-found' })
+  expect(await app.startAttendanceScan({ proposalId: 9n })).toMatchObject({ status: 'not-found' })
   expect(await app.startAttendanceScan({ proposalId: -1n })).toMatchObject({ status: 'invalid-proposal-id' })
 })
 
@@ -291,4 +293,171 @@ test('browser camera maps permission errors and other failures to explained came
   await expect(failing('NotAllowedError').start(() => {})).rejects.toMatchObject({ kind: 'permission-denied' })
   await expect(failing('NotFoundError').start(() => {})).rejects.toMatchObject({ kind: 'unavailable' })
   await expect(createBrowserCameraScanner(() => ({})).start(() => {})).rejects.toMatchObject({ kind: 'unavailable' })
+})
+
+// ---------------------------------------------------------------------------
+// Spec 06.03: local persistence
+// ---------------------------------------------------------------------------
+
+/** Controlled browser storage: a Map with switchable failures. */
+function fakeStorage() {
+  const data = new Map<string, string>()
+  const fail = { read: false, write: false }
+  const storage: AttendanceStorage = {
+    getItem(key) { if (fail.read) throw new Error('SecurityError'); return data.get(key) ?? null },
+    setItem(key, value) { if (fail.write) throw new Error('QuotaExceededError'); data.set(key, value) },
+  }
+  return { storage, data, fail }
+}
+
+/** A page reload: a fresh application and camera over the same storage. */
+const reload = (storage: AttendanceStorage, options: Parameters<typeof setup>[0] = {}) => start({ storage, ...options })
+
+test('accepted entries are saved and restored with the same count after a reload', async () => {
+  const { storage } = fakeStorage()
+  const first = await start({ storage })
+  const seen: unknown[] = []
+  first.session.onScan(r => seen.push(r))
+  first.cam.scan(qr({ entry: ENTRY_A }))
+  first.cam.scan(qr({ entry: ENTRY_B }))
+  expect(seen).toMatchObject([{ status: 'accepted', saved: true }, { status: 'accepted', saved: true }])
+  expect(first.session.read().storage.status).toBe('saved')
+
+  const second = await reload(storage)
+  expect(second.session.read()).toMatchObject({ count: 2, entries: [ENTRY_A, ENTRY_B], storage: { status: 'saved' } })
+})
+
+test('rescanning an existing entry after a reload is a duplicate', async () => {
+  const { storage } = fakeStorage()
+  const first = await start({ storage })
+  first.cam.scan(qr({ entry: ENTRY_A }))
+
+  const second = await reload(storage)
+  const seen: unknown[] = []
+  second.session.onScan(r => seen.push(r))
+  second.cam.scan(qr({ entry: ENTRY_A }))
+  second.cam.scan(qr({ entry: ENTRY_B }))
+  expect(seen).toMatchObject([{ status: 'duplicate', count: 1 }, { status: 'accepted', count: 2 }])
+})
+
+test('events and deployments keep separate attendance sets', async () => {
+  const { storage } = fakeStorage()
+  const event1 = await start({ storage })
+  event1.cam.scan(qr({ entry: ENTRY_A }))
+
+  // A different DAO deployment and a different chain start empty.
+  const otherDao = await start({ storage, dao: OTHER_DAO })
+  expect(otherDao.session.read()).toMatchObject({ count: 0, entries: [] })
+  otherDao.cam.scan(qr({ daoAddress: OTHER_DAO, entry: ENTRY_B }))
+  const otherChain = await start({ storage, chainId: 97 })
+  expect(otherChain.session.read().count).toBe(0)
+
+  // Each deployment still resumes only its own set.
+  expect((await reload(storage)).session.read().entries).toEqual([ENTRY_A])
+  expect((await reload(storage, { dao: OTHER_DAO })).session.read().entries).toEqual([ENTRY_B])
+})
+
+test('only hashed entries and event metadata are persisted', async () => {
+  const { storage, data } = fakeStorage()
+  const { cam } = await start({ storage })
+  cam.scan(qr({ entry: ENTRY_A }))
+  const saved = [...data.values()].join('')
+  expect(JSON.parse([...data.values()][0])).toEqual({
+    schema: 1, chainId: 31337, dao: DAO.toLowerCase(), proposalId: '1', entries: [ENTRY_A],
+  })
+  expect(Object.keys(JSON.parse([...data.values()][0])).sort()).toEqual(['chainId', 'dao', 'entries', 'proposalId', 'schema'])
+  expect(saved).not.toContain(ORGANIZER.toLowerCase())
+  expect(saved).not.toContain(ATTENDEE_WALLET.toLowerCase())
+})
+
+test('malformed saved data is reported, never restored, and replaced by the next accepted entry', async () => {
+  const good = { schema: 1, chainId: 31337, dao: DAO.toLowerCase(), proposalId: '1', entries: [ENTRY_A] }
+  const bad = [
+    'not json', '{"schema":1}', '[]', 'null',
+    JSON.stringify({ ...good, schema: 2 }),
+    JSON.stringify({ ...good, entries: ['zz'] }),
+    JSON.stringify({ ...good, dao: OTHER_DAO }),
+    JSON.stringify({ ...good, proposalId: '2' }),
+    JSON.stringify({ ...good, entries: [ENTRY_A, ENTRY_A] }), // tampered duplicates are not hidden
+  ]
+  for (const value of bad) {
+    const { storage, data } = fakeStorage()
+    const seed = await start({ storage })
+    seed.cam.scan(qr({ entry: ENTRY_B })) // creates the key
+    data.set([...data.keys()][0], value)
+
+    const again = await reload(storage)
+    expect(again.session.read()).toMatchObject({ count: 0, entries: [], storage: { status: 'corrupt' } })
+    again.cam.scan(qr({ entry: ENTRY_A }))
+    expect(again.session.read()).toMatchObject({ entries: [ENTRY_A], storage: { status: 'saved' } })
+  }
+})
+
+test('a failed write is reported as unsaved, keeps the entry in this session, and recovers on a later save', async () => {
+  const { storage, fail } = fakeStorage()
+  const { cam, session } = await start({ storage })
+  const seen: unknown[] = []
+  session.onScan(r => seen.push(r))
+  fail.write = true
+  cam.scan(qr({ entry: ENTRY_A }))
+  expect(seen[0]).toMatchObject({ status: 'accepted', saved: false, count: 1 })
+  expect(session.read()).toMatchObject({ count: 1, storage: { status: 'save-failed' } })
+  expect((await reload(storage)).session.read().count).toBe(0)
+
+  fail.write = false
+  cam.scan(qr({ entry: ENTRY_B }))
+  expect(session.read().storage.status).toBe('saved')
+  expect((await reload(storage)).session.read().entries).toEqual([ENTRY_A, ENTRY_B])
+})
+
+test('denied storage reads are reported as unavailable, and a later successful write is still saved', async () => {
+  const { storage, fail, data } = fakeStorage()
+  fail.read = true
+  const { cam, session, sendTransaction } = await start({ storage })
+  expect(session.read().storage.status).toBe('unavailable')
+  cam.scan(qr({ entry: ENTRY_A }))
+  expect(session.read()).toMatchObject({ count: 1, storage: { status: 'saved' } })
+  expect(data.size).toBe(1)
+  expect(sendTransaction).not.toHaveBeenCalled()
+})
+
+test('storage that reads but refuses writes is reported as not saved', async () => {
+  const storage: AttendanceStorage = {
+    getItem: () => null,
+    setItem() { throw new Error('SecurityError') },
+  }
+  const { cam, session } = await start({ storage })
+  expect(session.read().storage.status).not.toBe('save-failed')
+  cam.scan(qr({ entry: ENTRY_A }))
+  expect(session.read()).toMatchObject({ count: 1, storage: { status: 'save-failed' } })
+})
+
+test('a fresh event with working storage is not claimed as saved until an entry is written', async () => {
+  const { storage } = fakeStorage()
+  const { cam, session } = await start({ storage })
+  expect(session.read().storage.status).toBe('empty')
+  expect(session.read().storage.message).not.toContain('Saved in this browser')
+  cam.scan(qr({ entry: ENTRY_A }))
+  expect(session.read().storage).toMatchObject({ status: 'saved', message: 'Saved in this browser.' })
+})
+
+test('different proposals on the same deployment keep separate saved sets', async () => {
+  const { storage } = fakeStorage()
+  const one = await start({ storage, proposalId: 1n })
+  one.cam.scan(qr({ proposalId: 1n, entry: ENTRY_A }))
+  const two = await start({ storage, proposalId: 2n })
+  expect(two.session.read().entries).toEqual([])
+  two.cam.scan(qr({ proposalId: 2n, entry: ENTRY_B }))
+  expect((await reload(storage, { proposalId: 1n })).session.read().entries).toEqual([ENTRY_A])
+  expect((await reload(storage, { proposalId: 2n })).session.read().entries).toEqual([ENTRY_B])
+})
+
+test('non-creators and disconnected wallets never trigger a storage read', async () => {
+  const getItem = vi.fn(() => null)
+  const storage: AttendanceStorage = { getItem, setItem: vi.fn() }
+  const cam = fakeCamera()
+  const stranger = setup({ camera: cam.camera, creator: OTHER_DAO, storage })
+  await stranger.app.connect()
+  expect(await stranger.app.startAttendanceScan({ proposalId: 1n })).toMatchObject({ status: 'not-organizer' })
+  expect(getItem).not.toHaveBeenCalled()
 })

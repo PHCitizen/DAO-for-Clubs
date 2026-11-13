@@ -24,7 +24,7 @@ Spec status indicates a defined work contract, not that every dependency is sati
 
 Active prerequisite: [TODO-01: transparent ZK feasibility and shared format](../todos/01-transparent-zk-feasibility.md). Public copying/private-proof reuse and first-claim front-running are accepted weaknesses; a consumed entry still cannot yield another public claim.
 
-Latest scope: **Chrome only**. [TODO-02: shared attendance format agreement](../todos/02-attendance-format-agreement.md) is the actionable publication-format prerequisite, separate from TODO-01's full private-proof qualification. Feature 07 does not wait for Firefox, native proof interoperability, private-proof budgets, or a Solidity ZK verifier. Its concrete shared format is still unapproved; start TODO-02 now rather than guessing a production tree.
+Latest scope: **Chrome only**. [TODO-02: shared attendance format agreement](../todos/02-attendance-format-agreement.md) is resolved following user approval, separately from TODO-01's private-proof qualification. Feature 07's format gate is cleared; it does not wait for Firefox, native proof interoperability, private-proof budgets, or a Solidity ZK verifier.
 
 ## Workspace agreement
 

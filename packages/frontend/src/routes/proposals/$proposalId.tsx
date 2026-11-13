@@ -5,6 +5,8 @@ import { app } from '../../applicationInstance'
 import { ReadFailure } from './-ReadFailure'
 import { AttendanceScanPanel } from './-attendance'
 import { ProposalVotingPanel } from './-vote'
+import { PublicBallotList } from './-ballots'
+import { ProposalFundingPanel } from './-release'
 
 export const Route = createFileRoute('/proposals/$proposalId')({ component: ProposalDetailPage })
 
@@ -18,6 +20,7 @@ function parseId(value: string): bigint | null {
 function ProposalDetailPage() {
   const { proposalId } = Route.useParams()
   const [state, setState] = useState<DetailState>('loading')
+  const numericId = parseId(proposalId)
 
   const load = useCallback(async () => {
     const id = parseId(proposalId)
@@ -39,11 +42,13 @@ function ProposalDetailPage() {
         ← Proposals
       </Link>
       <Body state={state} proposalId={proposalId} onRetry={() => void load()} />
-      {parseId(proposalId) !== null && (
-        <ProposalVotingPanel key={proposalId} id={parseId(proposalId)!} />
-      )}
-      {parseId(proposalId) !== null && (
-        <AttendanceScanPanel key={`attendance-${proposalId}`} id={parseId(proposalId)!} />
+      {numericId !== null && (
+        <>
+          <ProposalVotingPanel key={proposalId} id={numericId} />
+          <PublicBallotList key={`ballots-${proposalId}`} id={numericId} />
+          <ProposalFundingPanel key={`funding-${proposalId}`} id={numericId} />
+          <AttendanceScanPanel key={`attendance-${proposalId}`} id={numericId} />
+        </>
       )}
     </main>
   )
