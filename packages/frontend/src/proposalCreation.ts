@@ -40,11 +40,30 @@ export interface ProposalTransactionReceipt {
   logs: readonly ProposalTransactionLog[]
 }
 
+export interface ProposalLogRequest {
+  address: Address
+  abi: Abi
+  eventName: string
+  args?: Record<string, unknown>
+  fromBlock?: bigint
+  toBlock?: bigint | 'latest'
+}
+
+export interface ProposalLog {
+  args: Record<string, unknown>
+}
+
 export interface ProposalChain {
   getChainId(): Promise<number>
   readContract<T = unknown>(request: ProposalReadRequest): Promise<T>
   sendTransaction(request: ProposalWriteRequest): Promise<Hex>
   waitForTransactionReceipt(hash: Hex): Promise<ProposalTransactionReceipt>
+  /**
+   * Queries historical event logs directly (no backend indexer). Optional:
+   * only ballot inspection needs it, and reports transport unavailability
+   * when absent rather than failing every other proposal read.
+   */
+  getLogs?(request: ProposalLogRequest): Promise<ProposalLog[]>
 }
 
 export interface ProposalConfig {

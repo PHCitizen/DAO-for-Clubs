@@ -5,6 +5,7 @@ import { app } from '../../applicationInstance'
 import { ReadFailure } from './-ReadFailure'
 import { AttendanceScanPanel } from './-attendance'
 import { ProposalVotingPanel } from './-vote'
+import { PublicBallotList } from './-ballots'
 import { ProposalFundingPanel } from './-release'
 
 export const Route = createFileRoute('/proposals/$proposalId')({ component: ProposalDetailPage })
@@ -44,6 +45,7 @@ function ProposalDetailPage() {
       {numericId !== null && (
         <>
           <ProposalVotingPanel key={proposalId} id={numericId} />
+          <PublicBallotList key={`ballots-${proposalId}`} id={numericId} />
           <ProposalFundingPanel key={`funding-${proposalId}`} id={numericId} />
           <AttendanceScanPanel key={`attendance-${proposalId}`} id={numericId} />
         </>
