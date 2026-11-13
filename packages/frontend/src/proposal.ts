@@ -1,4 +1,5 @@
 import { Marked, type RendererObject } from 'marked'
+import { MAX_SINGLE_CHUNK_BYTES } from './ipfsContent.js'
 
 // ---------------------------------------------------------------------------
 // Proposal document format (version 1)
@@ -17,6 +18,12 @@ import { Marked, type RendererObject } from 'marked'
 export const PROPOSAL_DOCUMENT_VERSION = 1 as const
 export const PROPOSAL_DOCUMENT_ENCODING = 'utf-8-json' as const
 export const MAX_PROPOSAL_TITLE_LENGTH = 200
+/**
+ * Upper bound on the encoded document. Readers can only content-verify a
+ * single IPFS chunk, so anything larger would be published but unreadable;
+ * authoring refuses it and decoding rejects it with the same limit.
+ */
+export const MAX_PROPOSAL_DOCUMENT_BYTES = MAX_SINGLE_CHUNK_BYTES
 
 export interface ProposalDocument {
   version: typeof PROPOSAL_DOCUMENT_VERSION
@@ -29,7 +36,7 @@ export interface ProposalDocument {
 export class ProposalDocumentError extends Error {
   readonly kind = 'proposal-document-error' as const
   constructor(
-    readonly reason: 'invalid-encoding' | 'invalid-schema' | 'unsupported-version',
+    readonly reason: 'invalid-encoding' | 'invalid-schema' | 'unsupported-version' | 'too-large',
     message: string
   ) {
     super(message)
@@ -47,6 +54,13 @@ export function proposalDocumentToJson(document: ProposalDocument): string {
   })
 }
 
+/** Describes why the encoded document is too large to publish, or null if it fits. */
+export function proposalDocumentSizeProblem(document: ProposalDocument): string | null {
+  const size = encodeProposalDocument(document).byteLength
+  if (size <= MAX_PROPOSAL_DOCUMENT_BYTES) return null
+  return `The proposal document is ${size} bytes; the limit is ${MAX_PROPOSAL_DOCUMENT_BYTES} bytes (256 KiB). Shorten the Markdown.`
+}
+
 /** Encodes a document as the exact UTF-8 bytes that will be pinned. */
 export function encodeProposalDocument(document: ProposalDocument): Uint8Array {
   return new TextEncoder().encode(proposalDocumentToJson(document))
@@ -58,6 +72,13 @@ export function encodeProposalDocument(document: ProposalDocument): Uint8Array {
  * mistakes a different artifact for a valid proposal document.
  */
 export function decodeProposalDocument(bytes: Uint8Array): ProposalDocument {
+  if (bytes.byteLength > MAX_PROPOSAL_DOCUMENT_BYTES) {
+    throw new ProposalDocumentError(
+      'too-large',
+      `Proposal document exceeds ${MAX_PROPOSAL_DOCUMENT_BYTES} bytes.`
+    )
+  }
+
   let json: string
   try {
     json = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
