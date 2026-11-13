@@ -1,5 +1,5 @@
-import { isAddress, type Hex } from 'viem'
-import publicArtifacts from './generated/public-artifacts.json'
+import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
+import { decodeEventLog, erc20Abi, isAddress, parseUnits, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
   type Address,
@@ -11,13 +11,13 @@ import {
   NetworkSwitchError,
   TransactionRejectedError,
   normalizeWalletError,
-} from './wallet'
+} from './wallet.js'
 import {
   type DeploymentConfig,
   type DeploymentContext,
   getSupportedChain,
   resolveDeploymentContext,
-} from './networks'
+} from './networks.js'
 import {
   type RpcAdapter,
   createBrowserRpcAdapter,
@@ -27,14 +27,14 @@ import {
   ChainMismatchError,
   StaleActionConfigurationError,
   RpcUnavailableError,
-} from './rpc'
+} from './rpc.js'
 import {
   type TreasuryAbis,
   type TreasuryReads,
   type TreasurySnapshot,
   createTreasuryReads,
   TreasuryChainMismatchError,
-} from './treasury'
+} from './treasury.js'
 import {
   type MintTestUsdOutcome,
   type TestUsdChain,
@@ -47,7 +47,7 @@ import {
   TestUsdConfirmationError,
   TestUsdMintRevertedError,
   TestUsdSubmissionError,
-} from './testusd'
+} from './testusd.js'
 
 // ---------------------------------------------------------------------------
 // Wallet connection and network state
@@ -381,6 +381,22 @@ function toMintTestUsdFailure(error: unknown): MintTestUsdResult {
  * or the production browser adapter in the app entry point. When no adapter
  * is supplied the application runs read-only (no wallet actions available).
  */
+export type FundingBalances = {
+  treasury: Address
+  sender: Address
+  asset: Address
+  decimals: number
+  senderBalance: bigint
+  treasuryBalance: bigint
+}
+export type FundingRequest = { treasury: Address; sender: Address; amount: string }
+export type FundingState =
+  | { status: 'idle' }
+  | (FundingRequest & { status: 'submitting' })
+  | (FundingRequest & { status: 'pending'; hash: Hash })
+  | (FundingRequest & { status: 'confirmed'; hash: Hash; balances?: FundingBalances; refreshError?: string })
+  | { status: 'rejected' | 'failed'; message: string }
+
 export function createApplication(
   adapter?: WalletAdapter,
   injectedRpcAdapter?: RpcAdapter,
@@ -487,6 +503,25 @@ export function createApplication(
   }
 
   let networkState: NetworkState = deriveNetworkState()
+  let fundingState: FundingState = { status: 'idle' }
+  let fundingInProgress = false
+  const fundingListeners = new Set<(state: FundingState) => void>()
+  function emitFunding(state: FundingState) {
+    fundingState = state
+    for (const listener of fundingListeners) listener(state)
+  }
+
+  async function fundingBalances(treasury: Address, sender: Address): Promise<FundingBalances> {
+    const contracts = rpc?.contracts
+    const dao = deploymentContext.daoAddress
+    const asset = deploymentContext.testUsdAddress
+    if (!contracts || !dao || !asset || !deploymentContext.isSupported || !isAddress(treasury)) throw new Error('Funding deployment is unavailable or invalid.')
+    if (await rpc!.getChainId() !== deploymentContext.chainId) throw new Error('RPC deployment chain mismatch.')
+    const { shared, registered, ownerDao, fundingAsset } = await contracts.readDeployment(dao, treasury)
+    if (!registered || shared.toLowerCase() !== asset.toLowerCase() || fundingAsset.toLowerCase() !== asset.toLowerCase() || ownerDao.toLowerCase() !== dao.toLowerCase()) throw new Error('Treasury does not belong to the configured deployment.')
+    const { decimals, senderBalance, treasuryBalance } = await contracts.readBalances(asset, sender, treasury)
+    return { treasury, sender, asset, decimals, senderBalance, treasuryBalance }
+  }
 
   function emit(next: WalletState) {
     walletState = next
@@ -539,6 +574,53 @@ export function createApplication(
   }
 
   return {
+    readFundingState: () => fundingState,
+    onFundingStateChanged(listener: (state: FundingState) => void) {
+      fundingListeners.add(listener)
+      return () => { fundingListeners.delete(listener) }
+    },
+    async refreshFunding(treasury: Address, sender?: Address) {
+      const account = sender ?? (walletState.status === 'connected' ? walletState.account : null)
+      if (!account) throw new WalletNotConnectedError()
+      return fundingBalances(treasury, account)
+    },
+    async fundTreasury(treasury: Address, amount: string): Promise<void> {
+      if (fundingInProgress) return
+      fundingInProgress = true
+      try {
+        const prepared = await this.prepareDeploymentAction({ target: 'testUsd' })
+        const sender = prepared.context.account
+        const request: FundingRequest = { treasury, sender, amount }
+        emitFunding({ status: 'submitting', ...request })
+        const balances = await fundingBalances(treasury, sender)
+        if (!/^\d+(\.\d+)?$/.test(amount) || (amount.split('.')[1]?.length ?? 0) > balances.decimals) throw new Error('Enter a positive amount within TestUSD precision.')
+        const units = parseUnits(amount, balances.decimals)
+        if (units <= 0n || units > balances.senderBalance) throw new Error('Amount must be positive and within the sender balance.')
+        prepared.assertValid()
+        if (!adapter?.sendTransaction || await adapter.getAccount() !== sender || await adapter.getChainId() !== deploymentContext.chainId) throw new Error('Wallet configuration changed or cannot submit transactions.')
+        prepared.assertValid()
+        const hash = await adapter.sendTransaction({ from: sender, to: balances.asset, abi: erc20Abi, functionName: 'transfer', args: [treasury, units] })
+        emitFunding({ status: 'pending', ...request, hash })
+        const receipt = await rpc!.contracts!.waitForReceipt(hash)
+        if (receipt.status !== 'success') throw new Error('Funding transaction reverted.')
+        const transferred = receipt.logs.some(log => {
+          if (log.address.toLowerCase() !== balances.asset.toLowerCase()) return false
+          try {
+            const event = decodeEventLog({ abi: erc20Abi, eventName: 'Transfer', data: log.data, topics: log.topics })
+            return event.args.from.toLowerCase() === sender.toLowerCase() && event.args.to.toLowerCase() === treasury.toLowerCase() && event.args.value === units
+          } catch { return false }
+        })
+        if (!transferred) throw new Error('Mined transaction did not transfer the requested TestUSD amount to this treasury.')
+        const confirmed = { status: 'confirmed' as const, ...request, hash: receipt.transactionHash }
+        try { emitFunding({ ...confirmed, balances: await fundingBalances(treasury, sender) }) }
+        catch (error) { emitFunding({ ...confirmed, refreshError: error instanceof Error ? error.message : String(error) }) }
+      } catch (error) {
+        const rejected = error && typeof error === 'object' && 'code' in error && error.code === 4001
+        emitFunding({ status: rejected ? 'rejected' : 'failed', message: error instanceof Error ? error.message : String(error) })
+      } finally {
+        fundingInProgress = false
+      }
+    },
     // -----------------------------------------------------------------------
     // Read actions
     // -----------------------------------------------------------------------
@@ -947,6 +1029,7 @@ export function createApplication(
     // Teardown (for tests and hot-module replacement)
     // -----------------------------------------------------------------------
     destroy() {
+      fundingListeners.clear()
       detachAccountListener()
       detachChainListener()
       listeners.clear()
