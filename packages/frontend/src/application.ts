@@ -78,15 +78,16 @@ import {
   attendanceSigningMessage,
   deriveAttendanceCredential,
   encodeAttendanceQr,
+  attendanceEventKey,
   isAttendanceProposalId,
 } from './attendance.js'
 import {
   CameraError,
   createAttendanceCollection,
   type AttendanceCollection,
-  type AttendanceCollectionView,
+  createScanSession,
+  type AttendanceScanSession,
   type CameraScanner,
-  type ScanResult,
 } from './attendanceScan.js'
 import {
   type IpfsCredentials,
@@ -692,15 +693,7 @@ export interface StartAttendanceScanRequest {
   proposalId: bigint
 }
 
-export type ScanListener = (result: ScanResult) => void
-
-/** An active organizer scan: the camera feeds the validated, deduplicated collection. */
-export interface AttendanceScanSession {
-  read(): AttendanceCollectionView
-  onScan(listener: ScanListener): () => void
-  /** Stops the camera. Accepted entries stay in the collection. */
-  stop(): void
-}
+export type { AttendanceScanSession, ScanListener } from './attendanceScan.js'
 
 export type StartAttendanceScanResult =
   | { status: 'scanning'; session: AttendanceScanSession }
@@ -885,6 +878,7 @@ export function createApplication(
 
   // In-session collections keyed by deployment and proposal; persistence is a later slice.
   const attendanceCollections = new Map<string, AttendanceCollection>()
+  const activeScans = new Map<string, AttendanceScanSession>()
 
   const publicAbis = publicArtifacts.abis as unknown as TreasuryAbis
 
@@ -2143,7 +2137,7 @@ export function createApplication(
         return { status: 'read-failed', message: 'The proposal could not be read. Check the network and try again.' }
       }
       if (proposal === null) return { status: 'not-found', message: 'This proposal does not exist in the configured DAO.' }
-      if (walletState.status !== 'connected' || proposal.creator.toLowerCase() !== walletState.account.toLowerCase()) {
+      if (proposal.creator.toLowerCase() !== walletState.account.toLowerCase()) {
         return { status: 'not-organizer', message: 'Only the proposal creator can collect attendance for this event.' }
       }
       if (!options.camera) {
@@ -2155,21 +2149,19 @@ export function createApplication(
         daoAddress: proposalConfig.daoAddress,
         proposalId: request.proposalId,
       }
-      const key = `${event.chainId}:${event.daoAddress.toLowerCase()}:${event.proposalId}`
+      const key = attendanceEventKey(event)
       let collection = attendanceCollections.get(key)
       if (!collection) {
         collection = createAttendanceCollection(event)
         attendanceCollections.set(key, collection)
       }
-      const active = collection
-      const listeners = new Set<ScanListener>()
-      let scanning = true
-      let handle: { stop(): void }
+      const creator = proposal.creator.toLowerCase()
+      let session: AttendanceScanSession
       try {
-        handle = await options.camera.start(payload => {
-          if (!scanning) return
-          const result = active.submit(payload)
-          listeners.forEach(listener => listener(result))
+        session = await createScanSession({
+          collection,
+          camera: options.camera,
+          isOrganizer: () => walletState.status === 'connected' && walletState.account.toLowerCase() === creator,
         })
       } catch (error) {
         const kind = error instanceof CameraError ? error.kind : 'unavailable'
@@ -2178,21 +2170,11 @@ export function createApplication(
           message: new CameraError(kind).message,
         }
       }
-      return {
-        status: 'scanning',
-        session: {
-          read: () => active.read(),
-          onScan(listener) {
-            listeners.add(listener)
-            return () => listeners.delete(listener)
-          },
-          stop() {
-            if (!scanning) return
-            scanning = false
-            handle.stop()
-          },
-        },
-      }
+      // One live camera per event: a newer session replaces the older one.
+      activeScans.get(key)?.stop()
+      activeScans.set(key, session)
+      session.onStop(() => { if (activeScans.get(key) === session) activeScans.delete(key) })
+      return { status: 'scanning', session }
     },
 
     /**

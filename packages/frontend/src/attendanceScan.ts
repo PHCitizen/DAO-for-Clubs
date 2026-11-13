@@ -1,5 +1,5 @@
 import { isAddress, type Address, type Hex } from 'viem'
-import { ATTENDANCE_QR_VERSION, type AttendanceEvent } from './attendance.js'
+import { ATTENDANCE_QR_VERSION, sameAttendanceEvent, type AttendanceEvent } from './attendance.js'
 
 /**
  * Organizer-side attendance collection (spec 06.02). Validation and
@@ -108,11 +108,7 @@ export function createAttendanceCollection(event: AttendanceEvent): AttendanceCo
     submit(payload) {
       const parsed = parseAttendanceQr(payload)
       if (!parsed.ok) return reject(parsed.reason)
-      if (
-        parsed.chainId !== event.chainId ||
-        parsed.dao.toLowerCase() !== event.daoAddress.toLowerCase() ||
-        parsed.proposalId !== event.proposalId
-      ) {
+      if (!sameAttendanceEvent({ chainId: parsed.chainId, daoAddress: parsed.dao, proposalId: parsed.proposalId }, event)) {
         return reject('wrong-event')
       }
       if (seen.has(parsed.entry)) return { status: 'duplicate', count: entries.length }
@@ -121,5 +117,70 @@ export function createAttendanceCollection(event: AttendanceEvent): AttendanceCo
       return { status: 'accepted', count: entries.length }
     },
     read: () => ({ event: { ...event }, count: entries.length, entries: [...entries] }),
+  }
+}
+
+export type ScanListener = (result: ScanResult) => void
+
+/** An active organizer scan: the camera feeds the validated, deduplicated collection. */
+export interface AttendanceScanSession {
+  read(): AttendanceCollectionView
+  onScan(listener: ScanListener): () => void
+  /** Called once when the session ends, whether by stop() or by losing organizer rights. */
+  onStop(listener: () => void): () => void
+  /** Stops the camera. Accepted entries stay in the collection. */
+  stop(): void
+}
+
+/** The camera re-detects a held code every frame; identical payloads inside this window are one scan. */
+export const REPEAT_DETECTION_WINDOW_MS = 2000
+
+export interface ScanSessionOptions {
+  collection: AttendanceCollection
+  camera: CameraScanner
+  /** Re-checked on every detection; when false the session stops itself. */
+  isOrganizer(): boolean
+  now?: () => number
+}
+
+/** Wires camera detections into the collection. Throws CameraError if the camera cannot start. */
+export async function createScanSession(options: ScanSessionOptions): Promise<AttendanceScanSession> {
+  const { collection, camera, isOrganizer, now = Date.now } = options
+  const scanListeners = new Set<ScanListener>()
+  const stopListeners = new Set<() => void>()
+  let scanning = true
+  let handle: { stop(): void } | undefined
+  let last: { payload: string; at: number } | null = null
+
+  function stop() {
+    if (!scanning) return
+    scanning = false
+    handle?.stop()
+    stopListeners.forEach(listener => listener())
+  }
+
+  handle = await camera.start(payload => {
+    if (!scanning) return
+    if (!isOrganizer()) { stop(); return }
+    const at = now()
+    const repeat = last !== null && last.payload === payload && at - last.at < REPEAT_DETECTION_WINDOW_MS
+    last = { payload, at }
+    if (repeat) return // same code still in frame: keep the earlier feedback
+    const result = collection.submit(payload)
+    scanListeners.forEach(listener => listener(result))
+  })
+  if (!scanning) handle.stop() // stopped while the camera was starting
+
+  return {
+    read: () => collection.read(),
+    onScan(listener) {
+      scanListeners.add(listener)
+      return () => scanListeners.delete(listener)
+    },
+    onStop(listener) {
+      stopListeners.add(listener)
+      return () => stopListeners.delete(listener)
+    },
+    stop,
   }
 }

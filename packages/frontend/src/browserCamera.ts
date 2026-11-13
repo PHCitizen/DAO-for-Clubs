@@ -12,19 +12,34 @@ const SCAN_INTERVAL_MS = 250
  * Real camera transport: getUserMedia plus the browser's BarcodeDetector.
  * Verified only by the manual smoke check in docs/attendance-scanning.md.
  */
-export function createBrowserCameraScanner(): CameraScanner {
+export interface BrowserCameraApis {
+  mediaDevices?: Pick<MediaDevices, 'getUserMedia'>
+  BarcodeDetector?: BarcodeDetectorCtor
+}
+
+function defaultApis(): BrowserCameraApis {
+  return {
+    mediaDevices: typeof navigator === 'undefined' ? undefined : navigator.mediaDevices,
+    BarcodeDetector: (globalThis as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector,
+  }
+}
+
+/** Maps a getUserMedia rejection (matched by error name, not DOMException identity) to a camera failure. */
+function cameraFailure(error: unknown): CameraError {
+  const name = (error as { name?: unknown } | null)?.name
+  return new CameraError(name === 'NotAllowedError' || name === 'SecurityError' ? 'permission-denied' : 'unavailable')
+}
+
+export function createBrowserCameraScanner(apis: () => BrowserCameraApis = defaultApis): CameraScanner {
   return {
     async start(onPayload) {
-      const Detector = (globalThis as { BarcodeDetector?: BarcodeDetectorCtor }).BarcodeDetector
-      if (!Detector || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-        throw new CameraError('unavailable')
-      }
+      const { mediaDevices, BarcodeDetector: Detector } = apis()
+      if (!Detector || !mediaDevices?.getUserMedia) throw new CameraError('unavailable')
       let stream: MediaStream
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+        stream = await mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       } catch (error) {
-        const name = error instanceof DOMException ? error.name : ''
-        throw new CameraError(name === 'NotAllowedError' || name === 'SecurityError' ? 'permission-denied' : 'unavailable')
+        throw cameraFailure(error)
       }
       const video = document.createElement('video')
       video.muted = true
