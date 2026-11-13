@@ -74,6 +74,8 @@ contract DAO {
     event FundsReleased(uint256 indexed proposalId, address indexed treasury, address indexed recipient, uint256 amount);
     /// Emitted when a release request found the treasury unable to pay; nothing moved and nothing was marked paid.
     event FundingShortage(uint256 indexed proposalId, uint256 available, uint256 required);
+    /// Emitted when the balance sufficed but the asset's transfer failed; the payment was rolled back and the proposal stays retryable.
+    event FundsTransferFailed(uint256 indexed proposalId, address indexed treasury, uint256 amount);
 
     event TreasuryCreated(address indexed treasury, address indexed administrator);
     event ProposalCreated(
@@ -248,7 +250,8 @@ contract DAO {
      * recipient and amount. A passing result remains payable after vote close;
      * a proposal that never passed is not. The actual treasury balance at
      * execution decides: a shortage does not revert, it emits FundingShortage,
-     * moves nothing and leaves the proposal unpaid and retryable. A receipt is
+     * moves nothing and leaves the proposal unpaid and retryable; an asset that
+     * fails the transfer likewise rolls back and emits FundsTransferFailed. A receipt is
      * therefore not proof of payment; look for FundsReleased / fundsReleased.
      * @return paid True only if TestUSD actually moved.
      */
@@ -275,7 +278,7 @@ contract DAO {
         } catch {
             // The asset refused the transfer: undo, so a failed transfer is never paid state.
             fundsReleased[proposalId] = false;
-            emit FundingShortage(proposalId, available, proposal.amount);
+            emit FundsTransferFailed(proposalId, proposal.treasury, proposal.amount);
         }
         _releasing = false;
     }

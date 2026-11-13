@@ -48,9 +48,11 @@ test('creator releases a passed proposal exactly once, even after vote close', a
       assert.equal(await balance(f.accounts[creator]) - creatorBefore, 40n * UNIT)
       assert.equal(await balance(address), 60n * UNIT)
       assert.equal(await released(id), true)
+      const logsBefore = await f.publicClient.getLogs({ address: [f.daoAddress, f.testUsdAddress], fromBlock: 0n })
       await assert.rejects(dao(creator).write.releaseFunds([id]), /FundsAlreadyReleased/)
-      assert.equal(await balance(f.accounts[creator]) - creatorBefore, 40n * UNIT)
-      assert.equal(await balance(address), 60n * UNIT)
+      assert.equal(await balance(f.accounts[creator]) - creatorBefore, 40n * UNIT, 'duplicate request pays the recipient nothing more')
+      assert.equal(await balance(address), 60n * UNIT, 'duplicate request takes nothing more from the treasury')
+      assert.deepEqual(await f.publicClient.getLogs({ address: [f.daoAddress, f.testUsdAddress], fromBlock: 0n }), logsBefore, 'no transfer or event')
     })
 
     await t.test('wrong caller, unpassed and never-passed proposals change nothing', async () => {
@@ -132,9 +134,9 @@ test('creator releases a passed proposal exactly once, even after vote close', a
       await mine(dao(voter).write.voteYes([short.id, 1n]))
       assert.equal((await app.releaseFunds(short.id)).status, 'funds-pending')
       assert.equal(await balance(short.address), 10n * UNIT)
-      assert.deepEqual(await app.readFunding(short.id), { status: 'success', funding: {
+      assert.deepEqual(await app.readFunding(short.id).then(r => r.status === 'success' ? r.funding : r), {
         proposalId: short.id, amount: 30n * UNIT, recipient: getAddress(f.accounts[creator]), state: 'passed-awaiting-funds',
-      } })
+      })
 
       const funded = await proposalOn(25n * UNIT, 100n * UNIT)
       await mine(dao(voter).write.voteYes([funded.id, 1n]))
@@ -144,9 +146,9 @@ test('creator releases a passed proposal exactly once, even after vote close', a
       assert.equal(paid.status, 'confirmed')
       assert.equal(await balance(f.accounts[creator]) - before, 25n * UNIT)
       assert.equal(await balance(funded.address), 75n * UNIT)
-      assert.deepEqual(await app.readFunding(funded.id), { status: 'success', funding: {
+      assert.deepEqual(await app.readFunding(funded.id).then(r => r.status === 'success' ? r.funding : r), {
         proposalId: funded.id, amount: 25n * UNIT, recipient: getAddress(f.accounts[creator]), state: 'paid',
-      } })
+      })
 
       assert.equal((await app.releaseFunds(funded.id)).status, 'transaction-failed')
       assert.equal(await balance(funded.address), 75n * UNIT)
@@ -154,9 +156,9 @@ test('creator releases a passed proposal exactly once, even after vote close', a
 
       const unpassed = await proposalOn(5n * UNIT, 100n * UNIT)
       assert.equal((await app.releaseFunds(unpassed.id)).status, 'transaction-failed')
-      assert.deepEqual(await app.readFunding(unpassed.id), { status: 'success', funding: {
+      assert.deepEqual(await app.readFunding(unpassed.id).then(r => r.status === 'success' ? r.funding : r), {
         proposalId: unpassed.id, amount: 5n * UNIT, recipient: getAddress(f.accounts[creator]), state: 'not-passed',
-      } })
+      })
     })
   } finally { await connection.close() }
 })
