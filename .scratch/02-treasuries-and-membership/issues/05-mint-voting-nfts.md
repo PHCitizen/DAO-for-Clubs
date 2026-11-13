@@ -4,7 +4,7 @@
 **Spec:** [Feature 02: Treasuries, TestUSD, and voting membership](../spec.md)
 **What to build:** A treasury administrator can issue voting NFTs, and holders can inspect which credentials belong to which treasury.
 **Blocked by:** [02.01 — Create a treasury and assign its administrator](01-create-treasury.md).
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance criteria
 
@@ -18,3 +18,7 @@
 ## Scope
 
 Burning and its user interaction belong to the next membership ticket. Do not introduce delegation, personhood checks, snapshots, or transferable credentials.
+
+## Comments
+
+- 2026-11-13: Implemented on `integration/task-02-05-mint-voting-nfts` (PR #9). Voting NFTs live in `Treasury.sol` (admin-only `mintVotingNft`, monotonic never-reused IDs, all transfer/approval paths revert `VotingNftTransferDisabled`); frontend `membership` module exposes `mintVotingNft`/`readVotingMembership` through the application seam with a treasury-page membership panel. Tests: contract-level (`voting-nfts.test.ts`), application-on-real-EVM (`contracts/test/membership.test.ts`), stubbed behavioral (`frontend/src/membership.test.ts`); 33/33 contracts, 84/84 frontend, typecheck/build green. Code review (standards + spec axes) passed; review fixes in commit 8001929. All six acceptance criteria verified by the spec-axis review.
