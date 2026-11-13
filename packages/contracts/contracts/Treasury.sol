@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 error UnauthorizedCaller();
 error ZeroAddressParam();
 error InsufficientFundingAssetBalance();
+error NonexistentVotingNft();
+error VotingNftTransferDisabled();
 
 interface IERC20Token {
     function transfer(address to, uint256 amount) external returns (bool);
@@ -22,13 +24,77 @@ contract Treasury {
     address public immutable dao;
     address public immutable fundingAsset;
 
+    /// Live voting NFT supply for this treasury.
+    uint256 public totalSupply;
+    /// Monotonic allocator; token IDs start at 1 and are never reused.
+    uint256 private _nextTokenId = 1;
+    mapping(uint256 => address) private _ownerOf;
+    mapping(address => uint256[]) private _holderTokens;
+
     event FundsReleased(address indexed recipient, uint256 amount);
+    /// ERC-721 mint event: voting NFT identity is (this treasury, tokenId).
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
 
     constructor(address _administrator, address _fundingAsset) {
         if (_administrator == address(0) || _fundingAsset == address(0)) revert ZeroAddressParam();
         administrator = _administrator;
         dao = msg.sender;
         fundingAsset = _fundingAsset;
+    }
+
+    /**
+     * @notice Mints a fresh non-transferable voting NFT to a holder.
+     * Only this treasury's administrator may mint; token IDs are allocated
+     * monotonically and never reused, even after a later burn.
+     */
+    function mintVotingNft(address holder) external returns (uint256 tokenId) {
+        if (msg.sender != administrator) revert UnauthorizedCaller();
+        if (holder == address(0)) revert ZeroAddressParam();
+
+        tokenId = _nextTokenId++;
+        _ownerOf[tokenId] = holder;
+        _holderTokens[holder].push(tokenId);
+        totalSupply += 1;
+
+        emit Transfer(address(0), holder, tokenId);
+    }
+
+    /// Current owner of a voting NFT minted by this treasury.
+    function ownerOf(uint256 tokenId) external view returns (address) {
+        address owner = _ownerOf[tokenId];
+        if (owner == address(0)) revert NonexistentVotingNft();
+        return owner;
+    }
+
+    /// Number of live voting NFTs held by `holder` in this treasury.
+    function balanceOf(address holder) external view returns (uint256) {
+        return _holderTokens[holder].length;
+    }
+
+    /// Token IDs of the live voting NFTs held by `holder` in this treasury.
+    function tokensOfHolder(address holder) external view returns (uint256[] memory) {
+        return _holderTokens[holder];
+    }
+
+    /// Voting NFTs are non-transferable; every transfer path rejects.
+    function transferFrom(address, address, uint256) external pure {
+        revert VotingNftTransferDisabled();
+    }
+
+    function safeTransferFrom(address, address, uint256) external pure {
+        revert VotingNftTransferDisabled();
+    }
+
+    function safeTransferFrom(address, address, uint256, bytes calldata) external pure {
+        revert VotingNftTransferDisabled();
+    }
+
+    function approve(address, uint256) external pure {
+        revert VotingNftTransferDisabled();
+    }
+
+    function setApprovalForAll(address, bool) external pure {
+        revert VotingNftTransferDisabled();
     }
 
     /**
