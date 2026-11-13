@@ -175,7 +175,7 @@ test('proposal creation on a real local chain', async (t) => {
         )
         .map((entry) => ('name' in entry ? entry.name : ''))
         .sort()
-      assert.deepEqual(mutating, ['createProposal', 'createTreasury', 'voteYes'])
+      assert.deepEqual(mutating, ['checkPassing', 'createProposal', 'createTreasury', 'voteYes'])
 
       const after = await readProposal(1n)
       assert.deepEqual(after, before)

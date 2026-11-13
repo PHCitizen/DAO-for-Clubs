@@ -13,6 +13,7 @@ error ProposalNotFound();
 error VotingClosed();
 error BallotAlreadyCast();
 error NotVotingNftHolder();
+error InsufficientYesVotes();
 
 /**
  * @title DAO
@@ -180,6 +181,20 @@ contract DAO {
         _voting[proposalId].yesVotes++;
         emit YesVoteCast(proposalId, tokenId, msg.sender);
         _recordPassingIfQualified(proposalId);
+    }
+
+    /**
+     * @notice Permissionless passing check, reusable by fund release.
+     * Records the same passing result as a qualifying ballot without requiring
+     * a new vote; used after membership changes make retained yes votes
+     * sufficient under the current threshold. Requires an open vote (not yet
+     * passed, and before the deadline) and sufficient recorded yes votes
+     * under the current supply. Passing never touches treasury funds.
+     */
+    function checkPassing(uint256 proposalId) external returns (bool passingRecorded) {
+        _requireOpenVote(proposalId);
+        if (_voting[proposalId].yesVotes < _yesThreshold(proposalId)) revert InsufficientYesVotes();
+        return _recordPassingIfQualified(proposalId);
     }
 
     /// @dev Shared open-vote guard for later ballot and passing-check actions.
