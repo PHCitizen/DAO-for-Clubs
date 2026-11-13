@@ -62,15 +62,20 @@ function TestUsdMintPage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-6 py-20">
-      <Link to="/" className="text-sm font-semibold text-emerald-700 hover:underline">
+    <main className="mx-auto min-h-screen max-w-3xl px-4 py-14 text-text-primary sm:px-6 lg:py-20">
+      <Link
+        to="/"
+        className="text-sm font-semibold text-binance-yellow hover:text-binance-yellow-hover"
+      >
         ← DAO for Clubs
       </Link>
 
       <header className="mt-4">
-        <p className="text-sm font-semibold uppercase tracking-widest text-emerald-700">TestUSD</p>
-        <h1 className="mt-2 text-4xl font-bold tracking-tight">Mint test currency</h1>
-        <p className="mt-3 text-slate-600">
+        <p className="text-sm font-semibold uppercase tracking-widest text-binance-yellow">TestUSD</p>
+        <h1 className="mt-2 text-3xl font-extrabold tracking-tight text-text-primary sm:text-4xl">
+          Mint test currency
+        </h1>
+        <p className="mt-3 text-text-secondary">
           The designated currency administrator signs the mint with a connected wallet. The wallet
           must match the administrator recorded on the shared token; treasury administrators cannot
           mint.
@@ -81,9 +86,9 @@ function TestUsdMintPage() {
 
       <section
         aria-labelledby="mint-wallet-title"
-        className="mt-6 rounded-xl border border-slate-200 bg-white p-6"
+        className="mt-6 rounded-xl border border-card-border bg-card p-6 shadow-lg shadow-black/30"
       >
-        <h2 id="mint-wallet-title" className="text-lg font-semibold">
+        <h2 id="mint-wallet-title" className="text-lg font-semibold text-text-primary">
           Signing wallet
         </h2>
         <div className="mt-4">
@@ -126,7 +131,7 @@ function TestUsdMintPage() {
 function TestUsdIdentityCard({ state, onRetry }: { state: InfoState; onRetry: () => void }) {
   if (state === 'loading') {
     return (
-      <p role="status" className="mt-10 text-slate-600">
+      <p role="status" className="mt-10 text-text-secondary">
         Reading the shared TestUSD deployment…
       </p>
     )
@@ -134,18 +139,21 @@ function TestUsdIdentityCard({ state, onRetry }: { state: InfoState; onRetry: ()
 
   if (state.status === 'unconfigured') {
     return (
-      <div role="alert" className="mt-10 rounded-xl border border-slate-200 bg-slate-50 p-6">
-        <p className="font-semibold text-slate-800">TestUSD is not configured</p>
-        <p className="mt-1 text-sm text-slate-600">{state.message}</p>
+      <div role="alert" className="mt-10 rounded-xl border border-card-border bg-card p-6">
+        <p className="font-semibold text-text-primary">TestUSD is not configured</p>
+        <p className="mt-1 text-sm text-text-secondary">{state.message}</p>
       </div>
     )
   }
 
   if (state.status === 'chain-mismatch') {
     return (
-      <div role="alert" className="mt-10 rounded-xl border border-amber-200 bg-amber-50 p-6">
-        <p className="font-semibold text-amber-800">Wrong chain</p>
-        <p className="mt-1 text-sm text-amber-700">
+      <div
+        role="alert"
+        className="mt-10 rounded-xl border border-binance-yellow/30 bg-binance-yellow/10 p-6"
+      >
+        <p className="font-semibold text-binance-yellow">Wrong chain</p>
+        <p className="mt-1 text-sm text-text-secondary">
           This deployment requires chain {state.expectedChainId}, but the RPC endpoint reported
           chain {state.actualChainId}.
         </p>
@@ -156,10 +164,13 @@ function TestUsdIdentityCard({ state, onRetry }: { state: InfoState; onRetry: ()
 
   if (state.status === 'rpc-unavailable') {
     return (
-      <div role="alert" className="mt-10 rounded-xl border border-red-200 bg-red-50 p-6">
-        <p className="font-semibold text-red-800">TestUSD could not be read</p>
-        <p className="mt-1 text-sm text-red-700">{state.message}</p>
-        <p className="mt-1 font-mono text-xs text-red-600">{state.error}</p>
+      <div
+        role="alert"
+        className="mt-10 rounded-xl border border-status-error/30 bg-status-error/10 p-6"
+      >
+        <p className="font-semibold text-status-error">TestUSD could not be read</p>
+        <p className="mt-1 text-sm text-text-secondary">{state.message}</p>
+        <p className="mt-1 font-mono text-xs text-status-error">{state.error}</p>
         <RetryButton onRetry={onRetry} />
       </div>
     )
@@ -169,29 +180,31 @@ function TestUsdIdentityCard({ state, onRetry }: { state: InfoState; onRetry: ()
   return (
     <section
       aria-labelledby="testusd-identity-title"
-      className="mt-10 rounded-xl border border-slate-200 bg-white p-6"
+      className="mt-10 rounded-xl border border-card-border bg-card p-6 shadow-lg shadow-black/30"
     >
-      <h2 id="testusd-identity-title" className="text-lg font-semibold">
+      <h2 id="testusd-identity-title" className="text-lg font-semibold text-text-primary">
         Shared currency
       </h2>
       <dl className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
-          <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">Symbol</dt>
-          <dd className="mt-1 text-lg font-semibold text-slate-900">{info.symbol}</dd>
-          <dd className="mt-1 text-xs text-slate-500">{info.decimals} decimals</dd>
+          <dt className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+            Symbol
+          </dt>
+          <dd className="mt-1 text-lg font-semibold text-text-primary">{info.symbol}</dd>
+          <dd className="mt-1 text-xs text-text-tertiary">{info.decimals} decimals</dd>
         </div>
         <div>
-          <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+          <dt className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
             Token address
           </dt>
-          <dd className="mt-1 break-all font-mono text-sm text-slate-900">{info.address}</dd>
-          <dd className="mt-1 text-xs text-slate-500">Chain {state.chainId}</dd>
+          <dd className="mt-1 break-all font-mono text-sm text-text-primary">{info.address}</dd>
+          <dd className="mt-1 text-xs text-text-tertiary">Chain {state.chainId}</dd>
         </div>
         <div className="sm:col-span-2">
-          <dt className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+          <dt className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
             Designated currency administrator
           </dt>
-          <dd className="mt-1 break-all font-mono text-sm text-slate-900">
+          <dd className="mt-1 break-all font-mono text-sm text-text-primary">
             {info.currencyAdmin}
           </dd>
         </div>
@@ -225,10 +238,12 @@ function MintWalletPanel({
 }: MintWalletPanelProps) {
   if (!isAvailable) {
     return (
-      <p className="text-slate-600">
-        No wallet extension detected. Install a compatible wallet and reload this page to sign the
-        mint.
-      </p>
+      <div className="rounded-lg border border-card-border bg-page/50 p-4">
+        <p className="text-sm font-semibold text-text-primary">No wallet extension detected</p>
+        <p className="mt-1 text-sm text-text-secondary">
+          Install a compatible wallet and reload this page to sign the mint.
+        </p>
+      </div>
     )
   }
 
@@ -237,7 +252,7 @@ function MintWalletPanel({
       <button
         type="button"
         onClick={onConnect}
-        className="rounded-lg bg-emerald-700 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700"
+        className="inline-flex items-center gap-2 rounded-lg bg-binance-yellow px-5 py-2.5 text-sm font-semibold text-binance-black shadow-sm transition-all hover:bg-binance-yellow-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-binance-yellow focus-visible:ring-offset-2 focus-visible:ring-offset-page"
       >
         Connect wallet
       </button>
@@ -246,7 +261,7 @@ function MintWalletPanel({
 
   if (walletState.status === 'connecting') {
     return (
-      <p className="text-slate-600">
+      <p className="text-text-secondary">
         <span aria-live="polite">Connecting — check your wallet…</span>
       </p>
     )
@@ -254,15 +269,18 @@ function MintWalletPanel({
 
   if (walletState.status === 'error') {
     return (
-      <div role="alert" className="space-y-3 rounded-lg border border-red-200 bg-red-50 p-4">
+      <div
+        role="alert"
+        className="space-y-3 rounded-lg border border-status-error/30 bg-status-error/10 p-4"
+      >
         <div>
-          <p className="text-sm font-semibold text-red-800">Wallet connection failed</p>
-          <p className="mt-1 text-sm text-red-700">{walletState.error.message}</p>
+          <p className="text-sm font-semibold text-status-error">Wallet connection failed</p>
+          <p className="mt-1 text-sm text-text-secondary">{walletState.error.message}</p>
         </div>
         <button
           type="button"
           onClick={onConnect}
-          className="rounded-lg bg-red-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-red-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+          className="rounded-lg bg-status-error px-4 py-1.5 text-sm font-semibold text-white hover:bg-status-error/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-error"
         >
           Try again
         </button>
@@ -275,15 +293,19 @@ function MintWalletPanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between gap-4 rounded-lg border border-card-border bg-page/50 p-4">
         <div>
-          <p className="text-sm text-slate-500">Connected account</p>
-          <p className="break-all font-mono text-sm text-slate-900">{walletState.account}</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+            Connected account
+          </p>
+          <p className="mt-1 break-all font-mono text-sm text-text-primary">
+            {walletState.account}
+          </p>
         </div>
         <button
           type="button"
           onClick={onDisconnect}
-          className="shrink-0 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-700"
+          className="shrink-0 rounded-lg border border-card-border bg-card px-3.5 py-1.5 text-xs font-medium text-text-secondary transition-all hover:border-text-secondary hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-binance-yellow"
         >
           Disconnect
         </button>
@@ -293,8 +315,8 @@ function MintWalletPanel({
         <p
           className={
             isAdministrator
-              ? 'rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800'
-              : 'rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800'
+              ? 'rounded-lg border border-status-success/30 bg-status-success/10 p-3 text-sm text-status-success'
+              : 'rounded-lg border border-binance-yellow/30 bg-binance-yellow/10 p-3 text-sm text-binance-yellow'
           }
         >
           {isAdministrator
@@ -304,9 +326,12 @@ function MintWalletPanel({
       )}
 
       {networkState.status === 'mismatched' && (
-        <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-4">
-          <p className="text-sm font-semibold text-amber-800">Wrong network</p>
-          <p className="mt-1 text-sm text-amber-700">
+        <div
+          role="alert"
+          className="rounded-lg border border-binance-yellow/30 bg-binance-yellow/10 p-4"
+        >
+          <p className="text-sm font-semibold text-binance-yellow">Wrong network</p>
+          <p className="mt-1 text-sm text-text-secondary">
             Your wallet is connected to chain {networkState.walletChainId}, but this deployment is
             on {networkState.configuredChainName} (Chain ID {networkState.configuredChainId}).
           </p>
@@ -314,7 +339,7 @@ function MintWalletPanel({
             <button
               type="button"
               onClick={onSwitchNetwork}
-              className="mt-3 rounded-lg bg-amber-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700"
+              className="mt-3 rounded-lg bg-binance-yellow px-4 py-2 text-xs font-semibold text-binance-black shadow-sm transition-all hover:bg-binance-yellow-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-binance-yellow"
             >
               Switch to {networkState.configuredChainName}
             </button>
@@ -323,13 +348,16 @@ function MintWalletPanel({
       )}
 
       {networkState.status === 'switching' && (
-        <p aria-live="polite" className="text-sm text-slate-600">
+        <p aria-live="polite" className="text-sm text-text-secondary">
           Switching network — check your wallet…
         </p>
       )}
 
       {networkState.status === 'switch-error' && (
-        <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <div
+          role="alert"
+          className="rounded-lg border border-status-error/30 bg-status-error/10 p-4 text-sm text-status-error"
+        >
           {networkState.error.message}
         </div>
       )}
@@ -377,19 +405,22 @@ function MintForm({
   return (
     <form
       onSubmit={onSubmit}
-      className="mt-6 rounded-xl border border-slate-200 bg-white p-6"
+      className="mt-6 rounded-xl border border-card-border bg-card p-6 shadow-lg shadow-black/30"
       aria-labelledby="mint-form-title"
     >
-      <h2 id="mint-form-title" className="text-lg font-semibold">
+      <h2 id="mint-form-title" className="text-lg font-semibold text-text-primary">
         Mint amount
       </h2>
-      <p className="mt-1 text-sm text-slate-600">
+      <p className="mt-1 text-sm text-text-secondary">
         Amounts use the token's {info?.decimals ?? '—'} decimals and are parsed as exact base units.
       </p>
 
       <div className="mt-4 space-y-4">
         <div>
-          <label htmlFor="mint-recipient" className="text-sm font-medium text-slate-700">
+          <label
+            htmlFor="mint-recipient"
+            className="block text-xs font-semibold uppercase tracking-wider text-text-secondary"
+          >
             Recipient address
           </label>
           <input
@@ -401,18 +432,21 @@ function MintForm({
             value={recipient}
             onChange={(event) => onRecipientChange(event.target.value)}
             placeholder="0x…"
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm text-slate-900 focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+            className="mt-1.5 block w-full rounded-lg border border-card-border bg-page px-3.5 py-2.5 font-mono text-sm text-text-primary placeholder:text-text-tertiary transition-colors focus:border-binance-yellow focus:outline-none focus:ring-1 focus:ring-binance-yellow"
           />
           {recipientError && (
-            <p role="alert" className="mt-1 text-sm text-red-700">
+            <p role="alert" className="mt-1 text-sm text-status-error">
               {recipientError}
             </p>
           )}
         </div>
 
         <div>
-          <label htmlFor="mint-amount" className="text-sm font-medium text-slate-700">
-            Amount {info && <span className="font-normal text-slate-500">({info.symbol})</span>}
+          <label
+            htmlFor="mint-amount"
+            className="block text-xs font-semibold uppercase tracking-wider text-text-secondary"
+          >
+            Amount {info && <span className="normal-case text-text-tertiary">({info.symbol})</span>}
           </label>
           <input
             id="mint-amount"
@@ -423,15 +457,15 @@ function MintForm({
             value={amount}
             onChange={(event) => onAmountChange(event.target.value)}
             placeholder="0.00"
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-emerald-600 focus:outline-none focus:ring-1 focus:ring-emerald-600"
+            className="mt-1.5 block w-full rounded-lg border border-card-border bg-page px-3.5 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary transition-colors focus:border-binance-yellow focus:outline-none focus:ring-1 focus:ring-binance-yellow"
           />
           {amountError && (
-            <p role="alert" className="mt-1 text-sm text-red-700">
+            <p role="alert" className="mt-1 text-sm text-status-error">
               {amountError}
             </p>
           )}
           {parsedAmount?.ok && (
-            <p className="mt-1 font-mono text-xs text-slate-500">
+            <p className="mt-1 font-mono text-xs text-text-tertiary">
               Exact amount: {parsedAmount.amount.toString()} base units (
               {parsedAmount.formattedAmount} {info?.symbol})
             </p>
@@ -442,12 +476,12 @@ function MintForm({
       <button
         type="submit"
         disabled={!canSubmit || !isValid || submitting}
-        className="mt-6 rounded-lg bg-emerald-700 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+        className="mt-6 inline-flex items-center gap-2 rounded-lg bg-binance-yellow px-5 py-2.5 text-sm font-semibold text-binance-black shadow-sm transition-all hover:bg-binance-yellow-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-binance-yellow focus-visible:ring-offset-2 focus-visible:ring-offset-page disabled:cursor-not-allowed disabled:bg-card-hover disabled:text-text-tertiary disabled:shadow-none"
       >
         {submitting ? 'Waiting for confirmation…' : 'Mint TestUSD'}
       </button>
       {!canSubmit && (
-        <p className="mt-2 text-xs text-slate-500">
+        <p className="mt-2 text-xs text-text-tertiary">
           Connect an authorized wallet on the configured network to enable minting.
         </p>
       )}
@@ -464,30 +498,30 @@ function MintResultPanel({ result }: { result: MintTestUsdResult }) {
     return (
       <section
         role="status"
-        className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 p-6"
+        className="mt-6 rounded-xl border border-status-success/30 bg-status-success/10 p-6"
       >
-        <h2 className="text-lg font-semibold text-emerald-900">Mint confirmed</h2>
-        <p className="mt-2 text-2xl font-bold text-emerald-900">
+        <h2 className="text-lg font-semibold text-status-success">Mint confirmed</h2>
+        <p className="mt-2 text-2xl font-bold text-text-primary">
           {result.formattedAmount}{' '}
-          <span className="text-base font-semibold">{result.symbol}</span>
+          <span className="text-base font-semibold text-status-success">{result.symbol}</span>
         </p>
-        <p className="mt-1 text-sm text-emerald-800">minted to</p>
-        <p className="mt-1 break-all font-mono text-sm text-emerald-900">{result.recipient}</p>
+        <p className="mt-1 text-sm text-text-secondary">minted to</p>
+        <p className="mt-1 break-all font-mono text-sm text-text-primary">{result.recipient}</p>
         <dl className="mt-4 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
           <div>
-            <dt className="text-xs font-semibold uppercase tracking-wider text-emerald-700">
+            <dt className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
               Updated recipient balance
             </dt>
-            <dd className="mt-1 font-semibold text-emerald-900">
+            <dd className="mt-1 font-semibold text-text-primary">
               {result.formattedRecipientBalance} {result.symbol}
             </dd>
           </div>
           <div>
-            <dt className="text-xs font-semibold uppercase tracking-wider text-emerald-700">
+            <dt className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
               Transaction
             </dt>
-            <dd className="mt-1 break-all font-mono text-xs text-emerald-900">{result.hash}</dd>
-            <dd className="mt-1 text-xs text-emerald-700">
+            <dd className="mt-1 break-all font-mono text-xs text-text-primary">{result.hash}</dd>
+            <dd className="mt-1 text-xs text-text-tertiary">
               Chain {result.chainId} · Block {result.blockNumber.toString()}
             </dd>
           </div>
@@ -498,54 +532,66 @@ function MintResultPanel({ result }: { result: MintTestUsdResult }) {
 
   if (result.status === 'invalid-recipient' || result.status === 'invalid-amount') {
     return (
-      <div role="alert" className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-semibold text-red-800">
+      <div
+        role="alert"
+        className="mt-6 rounded-xl border border-status-error/30 bg-status-error/10 p-4"
+      >
+        <p className="text-sm font-semibold text-status-error">
           {result.status === 'invalid-recipient' ? 'Invalid recipient' : 'Invalid amount'}
         </p>
-        <p className="mt-1 text-sm text-red-700">{result.message}</p>
+        <p className="mt-1 text-sm text-text-secondary">{result.message}</p>
       </div>
     )
   }
 
   if (result.status === 'unauthorized') {
     return (
-      <div role="alert" className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
-        <p className="text-sm font-semibold text-amber-800">Not the currency administrator</p>
-        <p className="mt-1 text-sm text-amber-700">{result.message}</p>
-        <p className="mt-2 break-all font-mono text-xs text-amber-800">
+      <div
+        role="alert"
+        className="mt-6 rounded-xl border border-binance-yellow/30 bg-binance-yellow/10 p-4"
+      >
+        <p className="text-sm font-semibold text-binance-yellow">Not the currency administrator</p>
+        <p className="mt-1 text-sm text-text-secondary">{result.message}</p>
+        <p className="mt-2 break-all font-mono text-xs text-text-primary">
           Connected: {result.account}
         </p>
-        <p className="mt-1 break-all font-mono text-xs text-amber-800">
+        <p className="mt-1 break-all font-mono text-xs text-text-primary">
           Required: {result.currencyAdmin}
         </p>
-        <p className="mt-2 text-sm text-amber-700">No transaction was sent.</p>
+        <p className="mt-2 text-sm text-text-secondary">No transaction was sent.</p>
       </div>
     )
   }
 
   if (result.status === 'wallet-rejected') {
     return (
-      <div role="alert" className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-semibold text-red-800">Mint not submitted</p>
-        <p className="mt-1 text-sm text-red-700">{result.message}</p>
+      <div
+        role="alert"
+        className="mt-6 rounded-xl border border-status-error/30 bg-status-error/10 p-4"
+      >
+        <p className="text-sm font-semibold text-status-error">Mint not submitted</p>
+        <p className="mt-1 text-sm text-text-secondary">{result.message}</p>
       </div>
     )
   }
 
   if (result.status === 'transaction-failed') {
     return (
-      <div role="alert" className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-semibold text-red-800">
+      <div
+        role="alert"
+        className="mt-6 rounded-xl border border-status-error/30 bg-status-error/10 p-4"
+      >
+        <p className="text-sm font-semibold text-status-error">
           {result.stage === 'reverted'
             ? 'Mint reverted on-chain'
             : result.stage === 'confirmation'
               ? 'Mint could not be confirmed'
               : 'Mint could not be submitted'}
         </p>
-        <p className="mt-1 text-sm text-red-700">{result.message}</p>
-        <p className="mt-1 font-mono text-xs text-red-600">{result.error}</p>
+        <p className="mt-1 text-sm text-text-secondary">{result.message}</p>
+        <p className="mt-1 font-mono text-xs text-status-error">{result.error}</p>
         {result.hash && (
-          <p className="mt-2 break-all font-mono text-xs text-red-700">
+          <p className="mt-2 break-all font-mono text-xs text-text-secondary">
             Transaction: {result.hash}
           </p>
         )}
@@ -555,9 +601,12 @@ function MintResultPanel({ result }: { result: MintTestUsdResult }) {
 
   if (result.status === 'chain-mismatch') {
     return (
-      <div role="alert" className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
-        <p className="text-sm font-semibold text-amber-800">Wrong chain</p>
-        <p className="mt-1 text-sm text-amber-700">
+      <div
+        role="alert"
+        className="mt-6 rounded-xl border border-binance-yellow/30 bg-binance-yellow/10 p-4"
+      >
+        <p className="text-sm font-semibold text-binance-yellow">Wrong chain</p>
+        <p className="mt-1 text-sm text-text-secondary">
           This deployment requires chain {result.expectedChainId}, but the wallet or RPC reported
           chain {result.actualChainId}. Nothing was minted.
         </p>
@@ -567,28 +616,34 @@ function MintResultPanel({ result }: { result: MintTestUsdResult }) {
 
   if (result.status === 'rpc-unavailable') {
     return (
-      <div role="alert" className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4">
-        <p className="text-sm font-semibold text-red-800">Minting unavailable</p>
-        <p className="mt-1 text-sm text-red-700">{result.message}</p>
-        <p className="mt-1 font-mono text-xs text-red-600">{result.error}</p>
+      <div
+        role="alert"
+        className="mt-6 rounded-xl border border-status-error/30 bg-status-error/10 p-4"
+      >
+        <p className="text-sm font-semibold text-status-error">Minting unavailable</p>
+        <p className="mt-1 text-sm text-text-secondary">{result.message}</p>
+        <p className="mt-1 font-mono text-xs text-status-error">{result.error}</p>
       </div>
     )
   }
 
   if (result.status === 'unconfigured') {
     return (
-      <div role="alert" className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
-        <p className="text-sm font-semibold text-slate-800">Minting is not configured</p>
-        <p className="mt-1 text-sm text-slate-600">{result.message}</p>
+      <div role="alert" className="mt-6 rounded-xl border border-card-border bg-card p-4">
+        <p className="text-sm font-semibold text-text-primary">Minting is not configured</p>
+        <p className="mt-1 text-sm text-text-secondary">{result.message}</p>
       </div>
     )
   }
 
   // wallet-not-connected, wallet-unavailable, stale-configuration
   return (
-    <div role="alert" className="mt-6 rounded-xl border border-red-200 bg-red-50 p-4">
-      <p className="text-sm font-semibold text-red-800">Mint not submitted</p>
-      <p className="mt-1 text-sm text-red-700">{result.message}</p>
+    <div
+      role="alert"
+      className="mt-6 rounded-xl border border-status-error/30 bg-status-error/10 p-4"
+    >
+      <p className="text-sm font-semibold text-status-error">Mint not submitted</p>
+      <p className="mt-1 text-sm text-text-secondary">{result.message}</p>
     </div>
   )
 }
@@ -598,7 +653,7 @@ function RetryButton({ onRetry }: { onRetry: () => void }) {
     <button
       type="button"
       onClick={onRetry}
-      className="mt-4 rounded-lg bg-red-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-red-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+      className="mt-4 rounded-lg bg-status-error px-4 py-1.5 text-sm font-semibold text-white hover:bg-status-error/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-error"
     >
       Try again
     </button>
