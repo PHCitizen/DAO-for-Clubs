@@ -24,6 +24,16 @@ export class VoteConfirmationError extends Error {
   constructor(message: string, readonly hash: Hex | null = null) { super(message) }
 }
 
+export class PassingCheckSubmissionError extends Error {
+  constructor(message: string, readonly cause: unknown) { super(message) }
+}
+export class PassingCheckRevertedError extends Error {
+  constructor(readonly hash: Hex) { super('The passing check reverted on-chain. No passing was recorded.') }
+}
+export class PassingCheckConfirmationError extends Error {
+  constructor(message: string, readonly hash: Hex | null = null) { super(message) }
+}
+
 export async function readVotingProgress(
   chain: ProposalChain, config: ProposalConfig, proposalId: bigint
 ): Promise<VotingProgress | null> {
@@ -66,6 +76,50 @@ export async function castVote(
   })
   if (!confirmed) throw new VoteConfirmationError(`No matching ${input.choice} ballot was found in the receipt.`, hash)
   // A failed refresh must not turn a confirmed ballot into an apparent failed submission.
+  try {
+    return { status: 'confirmed' as const, hash, progress: await readVotingProgress(chain, config, input.proposalId) }
+  } catch {
+    return { status: 'confirmed' as const, hash, progress: null }
+  }
+}
+
+/**
+ * Permissionless passing check: records the same passing result as a
+ * qualifying ballot without casting a new vote. Reusable once fund release
+ * needs the identical check. Never implies a payout or administrative
+ * approval; it only evaluates and records the existing-vote threshold.
+ */
+export async function checkProposalPassing(
+  chain: ProposalChain, config: ProposalConfig,
+  input: { from: Address; proposalId: bigint },
+  assertValid: () => Promise<void>,
+) {
+  const actualChainId = await chain.getChainId()
+  if (actualChainId !== config.chainId) throw new ProposalChainMismatchError(config.chainId, actualChainId)
+  await assertValid()
+  let hash: Hex
+  try {
+    hash = await chain.sendTransaction({
+      from: input.from, address: config.daoAddress, abi: config.daoAbi,
+      functionName: 'checkPassing', args: [input.proposalId],
+    })
+  } catch (error) {
+    throw new PassingCheckSubmissionError('The passing check was not submitted.', error)
+  }
+  let receipt
+  try { receipt = await chain.waitForTransactionReceipt(hash) }
+  catch { throw new PassingCheckConfirmationError('Passing check submitted, but confirmation is unavailable. Check the transaction before retrying.', hash) }
+  if (receipt.status !== 'success') throw new PassingCheckRevertedError(hash)
+  const confirmed = receipt.logs.some(log => {
+    if (log.address.toLowerCase() !== config.daoAddress.toLowerCase()) return false
+    try {
+      const event = decodeEventLog({ abi: config.daoAbi, eventName: 'ProposalPassed', data: log.data, topics: log.topics as [Hex, ...Hex[]] })
+      const args = event.args as unknown as { proposalId: bigint }
+      return args.proposalId === input.proposalId
+    } catch { return false }
+  })
+  if (!confirmed) throw new PassingCheckConfirmationError('No matching passing event was found in the receipt.', hash)
+  // A failed refresh must not turn a confirmed check into an apparent failed submission.
   try {
     return { status: 'confirmed' as const, hash, progress: await readVotingProgress(chain, config, input.proposalId) }
   } catch {

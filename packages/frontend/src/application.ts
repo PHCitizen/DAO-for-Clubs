@@ -1,5 +1,9 @@
 import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
-import { castVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError, type VotingProgress } from './voting.js'
+import {
+  castVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError,
+  checkProposalPassing, PassingCheckSubmissionError, PassingCheckRevertedError, PassingCheckConfirmationError,
+  type VotingProgress,
+} from './voting.js'
 import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
@@ -844,6 +848,13 @@ export type VoteResult =
   | TransactionActionFailure
   | TreasuryReadFailure
 
+/** Result of the permissionless passing check: a vote-passing determination, never a payout or administrative approval. */
+export type CheckPassingResult =
+  | { status: 'confirmed'; hash: Hex; progress: VotingProgress | null }
+  | { status: 'invalid-input'; message: string }
+  | TransactionActionFailure
+  | TreasuryReadFailure
+
 /** Number of proposal records fetched at once when listing (keeps RPC load bounded). */
 const PROPOSAL_LIST_BATCH_SIZE = 10
 
@@ -1289,6 +1300,42 @@ export function createApplication(
           rpcUnavailableMessage: 'Voting could not reach the configured RPC endpoint.',
           rejectedMessage: 'The vote was rejected in your wallet. Nothing was submitted.',
           submissionMessage: `The ${choice} vote was not submitted. Check ownership, token consumption, and whether voting is still open.`,
+        })
+      }
+    },
+
+    /**
+     * Permissionless passing check: anyone can submit it to record passing from
+     * already-cast yes votes once burns make them sufficient under the current
+     * threshold, without casting a new ballot. This is a vote-passing
+     * determination only: it does not release funds and is not an
+     * administrative approval.
+     */
+    async checkPassing(proposalId: bigint): Promise<CheckPassingResult> {
+      if (proposalId <= 0n || proposalId >= 2n ** 256n) return { status: 'invalid-input', message: 'Enter a valid positive proposal ID.' }
+      if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'The passing check requires a configured DAO and RPC endpoint.' }
+      if (!adapter) return { status: 'wallet-unavailable', message: 'No wallet extension is available.' }
+      if (walletState.status !== 'connected') return { status: 'wallet-not-connected', message: 'Connect a wallet to submit the passing check.' }
+      try {
+        const prepared = await this.prepareDeploymentAction({ target: 'dao' })
+        return await checkProposalPassing(proposalChain, proposalConfig, { from: prepared.context.account, proposalId }, async () => {
+          const [account, chainId] = await Promise.all([adapter.getAccount(), adapter.getChainId()])
+          if (chainId !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, chainId ?? 0)
+          if (account?.toLowerCase() !== prepared.context.account.toLowerCase()) throw new StaleActionConfigurationError()
+          prepared.assertValid()
+        })
+      } catch (error) {
+        if (error instanceof ChainMismatchError) return { status: 'chain-mismatch', expectedChainId: error.expectedChainId, actualChainId: error.actualChainId }
+        if (error instanceof WalletNotConnectedError) return { status: 'wallet-not-connected', message: 'Connect a wallet to submit the passing check.' }
+        if (error instanceof DeploymentNotDeployedError || error instanceof DeploymentNotConfiguredError) return { status: 'unconfigured', message: error.message }
+        return toTransactionFailure(error, {
+          ChainMismatchError: ProposalChainMismatchError,
+          RevertedError: PassingCheckRevertedError, ConfirmationError: PassingCheckConfirmationError, SubmissionError: PassingCheckSubmissionError,
+        }, {
+          revertedMessage: 'The passing check reverted. No passing was recorded.',
+          rpcUnavailableMessage: 'The passing check could not reach the configured RPC endpoint.',
+          rejectedMessage: 'The passing check was rejected in your wallet. Nothing was submitted.',
+          submissionMessage: 'The passing check was not submitted. Check recorded yes votes, current supply, and whether voting is still open.',
         })
       }
     },
