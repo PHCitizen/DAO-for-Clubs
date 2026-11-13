@@ -1,0 +1,21 @@
+{
+  "stage": "done",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+  "isolated": true,
+  "chromeHashVectors": 26,
+  "chromeEmptyRoot": true,
+  "constraints": 5285,
+  "witnesses": 5507,
+  "chromeWitnessSizes": [1, 2, 3, 1023, 1024],
+  "wrongSecretRejected": true,
+  "wrongContextRejected": true,
+  "wrongPathRejected": true,
+  "paddingIndexRejected": true,
+  "proveMs": 740.0150000001304,
+  "proofBytes": 761848,
+  "verifyMs": 141.98499999986961,
+  "chromeRoundtrip": true,
+  "changedPublicInputRejected": true,
+  "tamperedTranscriptRejected": true,
+  "totalMs": 2278.605000000447
+}

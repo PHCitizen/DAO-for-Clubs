@@ -3,8 +3,10 @@
 **ID:** 07.01
 **Spec:** [Feature 07: Immutable attendance publication](../spec.md)
 **What to build:** The organizer reviews a canonical attendance dataset and deterministic root derived from collected scans before proceeding to irreversible publication.
-**Blocked by:** [06.03 — Resume event scanning from localStorage](../../06-attendance-credentials-and-scanning/issues/03-persist-local-attendance.md); [TODO-01 — approved shared credential/Merkle format](../../../../todos/01-transparent-zk-feasibility.md), not Solidity ZK verification or private-proof UI completion.
+**Blocked by:** [06.03 — Resume event scanning from localStorage](../../06-attendance-credentials-and-scanning/issues/03-persist-local-attendance.md); [TODO-02 — approved shared credential/Merkle format](../../../../todos/02-attendance-format-agreement.md). Not blocked by completion of TODO-01's private-proof budgets, native↔Chrome interoperability, Firefox, Solidity ZK verification, or private-proof UI.
 **Status:** ready-for-agent
+
+**Format gate:** satisfied. The user approved [the exact minimal v2 POC agreement](../../../../docs/attendance-format-v2-proposal.md); TODO-02 is resolved. Only the remaining ordinary dependencies above must be completed before implementation. Do not wait for private-proof qualification in TODO-01.
 
 ## Acceptance criteria
 

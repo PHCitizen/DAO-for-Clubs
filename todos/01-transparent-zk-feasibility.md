@@ -6,6 +6,10 @@ Execution: authorized by the user on 2026-11-13; investigation in progress. Prod
 
 ## Purpose
 
+**Format approval recorded:** The user approved the exact minimal POC agreement in `docs/attendance-format-v2-proposal.md`. TODO-02 is resolved and feature 07's shared-format gate is cleared. Continue this investigation for private Chrome ZK security/privacy/performance and verifier artifacts; do not treat its unfinished qualification as a publication-format blocker.
+
+**Latest scope:** Chrome only; Firefox and native↔Chrome proof interchange are not acceptance requirements. Native/Chrome incompatibility remains documented but is not itself a blocker for a pinned Chrome-only verifier configuration. Verifier security warnings, real attendance constraints, privacy, and measured budgets remain unresolved. Feature 07's shared-format gate is tracked separately in [TODO-02](02-attendance-format-agreement.md); it does not wait for completion of private-proof qualification.
+
 **Current scope revision (user confirmed):** ZK is required only for private off-chain presentations. Public claims reveal the secret and Merkle path and use ordinary on-chain hash/membership checks. Consuming an entry prevents later duplicate public claims, but copying the credential for private proofs and front-running the first public claim are accepted POC weaknesses. This revision supersedes the earlier on-chain ZK, secret-hiding public claim, and constrained public-claim-nullifier requirements below. Earlier gates and research results must be read with this revision.
 
 Select and benchmark a transparent proof system for the agreed attendance credentials before proof-dependent implementation commits to a cryptographic format. This is an engineering feasibility investigation, not permission to change the product requirements.

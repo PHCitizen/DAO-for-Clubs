@@ -1,7 +1,9 @@
 # Feature 07: Immutable attendance publication
 
 Status: ready-for-agent
-Blocked by: TODO-01 for the canonical cryptographic format
+Blocked by: TODO-02 for the approved canonical cryptographic format, not completion of private-proof qualification in TODO-01
+
+Format gate satisfied: TODO-02 is resolved following explicit user approval of `docs/attendance-format-v2-proposal.md`. Feature 07 implementation can proceed subject to its normal ticket dependencies. Private-proof security/performance qualification remains separate.
 
 ## Problem Statement
 
