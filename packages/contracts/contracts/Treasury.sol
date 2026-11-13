@@ -30,6 +30,7 @@ contract Treasury {
     uint256 private _nextTokenId = 1;
     mapping(uint256 => address) private _ownerOf;
     mapping(address => uint256[]) private _holderTokens;
+    mapping(uint256 => uint256) private _holderTokenIndex;
 
     event FundsReleased(address indexed recipient, uint256 amount);
     /// ERC-721 mint event: voting NFT identity is (this treasury, tokenId).
@@ -53,10 +54,29 @@ contract Treasury {
 
         tokenId = _nextTokenId++;
         _ownerOf[tokenId] = holder;
+        _holderTokenIndex[tokenId] = _holderTokens[holder].length;
         _holderTokens[holder].push(tokenId);
         totalSupply += 1;
 
         emit Transfer(address(0), holder, tokenId);
+    }
+
+    /// Removes current membership only; proposal ballots and consumption are untouched.
+    function burnVotingNft(uint256 tokenId) external {
+        if (msg.sender != administrator) revert UnauthorizedCaller();
+        address holder = _ownerOf[tokenId];
+        if (holder == address(0)) revert NonexistentVotingNft();
+
+        uint256[] storage tokens = _holderTokens[holder];
+        uint256 index = _holderTokenIndex[tokenId];
+        uint256 lastTokenId = tokens[tokens.length - 1];
+        tokens[index] = lastTokenId;
+        _holderTokenIndex[lastTokenId] = index;
+        tokens.pop();
+        delete _holderTokenIndex[tokenId];
+        delete _ownerOf[tokenId];
+        totalSupply -= 1;
+        emit Transfer(holder, address(0), tokenId);
     }
 
     /// Current owner of a voting NFT minted by this treasury.

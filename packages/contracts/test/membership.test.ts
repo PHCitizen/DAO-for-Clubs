@@ -160,6 +160,37 @@ test('application voting NFT minting and membership inspection against a real lo
     const unknown = await appA.mintVotingNft({ treasury: outsider, holder })
     assert.equal(unknown.status, 'not-found')
 
+    // Burn a credential held by another wallet through the public application seam.
+    assert.equal((await appOutsider.burnVotingNft({ treasury: treasuryA, tokenId: '1' })).status, 'unauthorized')
+    assert.equal((await appA.burnVotingNft({ treasury: treasuryB, tokenId: '1' })).status, 'unauthorized')
+    mode = 'reject'
+    assert.equal((await appA.burnVotingNft({ treasury: treasuryA, tokenId: '1' })).status, 'wallet-rejected')
+    mode = 'revert'
+    const failedBurn = await appA.burnVotingNft({ treasury: treasuryA, tokenId: '1' })
+    assert.equal(failedBurn.status, 'transaction-failed')
+    if (failedBurn.status === 'transaction-failed') assert.equal(failedBurn.stage, 'reverted')
+    mode = 'normal'
+    const burned = await appA.burnVotingNft({ treasury: treasuryA, tokenId: '1' })
+    assert.equal(burned.status, 'success')
+    if (burned.status === 'success') {
+      assert.equal(burned.totalSupply, 2n)
+      assert.deepEqual(burned.holderTokenIds, [2n])
+      assert.equal(burned.holderBalance, 1n)
+      assert.equal(burned.holder.toLowerCase(), holder.toLowerCase())
+    }
+    await assert.rejects(treasury.read.ownerOf([1n]))
+    for (const id of ['1', '99']) {
+      const missing = await appA.burnVotingNft({ treasury: treasuryA, tokenId: id })
+      assert.equal(missing.status, 'transaction-failed')
+    }
+    const bAfter = await reader.readVotingMembership(treasuryB, holder)
+    assert.equal(bAfter.status, 'success')
+    if (bAfter.status === 'success') assert.deepEqual(bAfter.membership.holder?.tokenIds, [1n])
+    const fresh = await appA.mintVotingNft({ treasury: treasuryA, holder })
+    assert.equal(fresh.status, 'success')
+    if (fresh.status === 'success') assert.equal(fresh.tokenId, 4n)
+    // ID 4 exists in A, not B: the B administrator cannot burn that reference in B.
+    assert.equal((await appB.burnVotingNft({ treasury: treasuryB, tokenId: '4' })).status, 'transaction-failed')
     for (const app of [reader, appA, appB, appOutsider]) app.destroy()
   } finally {
     await connection.close()
