@@ -4,7 +4,7 @@
 **Spec:** [Feature 05: Creator-controlled fund release](../spec.md)
 **What to build:** The creator of an already passed proposal can collect its fixed TestUSD allocation exactly once, even after the voting deadline.
 **Blocked by:** [04.01 — Cast a yes vote and automatically record passing](../../04-public-voting/issues/01-vote-yes-and-pass.md).
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Acceptance criteria
 
