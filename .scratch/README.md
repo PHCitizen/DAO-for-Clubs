@@ -2,11 +2,11 @@
 
 ## State
 
-Nine feature specs and all 33 approved implementation tickets are published. Proposal authoring/IPFS publication and public voting are separate features. Ticket publication has not started implementation.
+Nine feature specs and the original 33 implementation tickets are published. Implementation is underway; consult individual ticket completion evidence rather than treating this map as a completion ledger. Proposal authoring/IPFS publication and public voting are separate features.
 
 Feature IDs have been renumbered before ticket publication: 03 is proposal authoring, 04 is public voting, and the remaining features follow in order. These identifiers supersede the earlier eight-feature proposal.
 
-Spec status indicates a defined work contract, not that every dependency is satisfied. Work only on tickets whose blockers are complete. TODO-01 is explicitly deferred and must not be started implicitly.
+Spec status indicates a defined work contract, not that every dependency is satisfied. Work only on tickets whose blockers are complete. TODO-01 is authorized and in progress, not deferred. It now qualifies private browser/off-chain ZK and the shared credential/Merkle format; public claims do not require a Solidity ZK verifier.
 
 ## Feature specs
 
@@ -20,9 +20,9 @@ Spec status indicates a defined work contract, not that every dependency is sati
 | 06 | [Attendance credentials and scanning](06-attendance-credentials-and-scanning/spec.md) | Signature recovery, scoped QR codes, local check-in |
 | 07 | [Attendance publication](07-attendance-publication/spec.md) | Canonical attendance data, organizer-funded IPFS pinning, immutable root |
 | 08 | [Private attendance proofs](08-private-attendance-proofs/spec.md) | Private witness preparation, browser proving, off-chain verification |
-| 09 | [Public attendance claims](09-public-attendance-claims/spec.md) | Wallet-bound proving, on-chain claims, public inspection |
+| 09 | [Public attendance claims](09-public-attendance-claims/spec.md) | Secret/path disclosure, on-chain hash membership and entry consumption, public inspection |
 
-Deferred prerequisite: [TODO-01: transparent ZK feasibility](../todos/01-transparent-zk-feasibility.md).
+Active prerequisite: [TODO-01: transparent ZK feasibility and shared format](../todos/01-transparent-zk-feasibility.md). Public copying/private-proof reuse and first-claim front-running are accepted weaknesses; a consumed entry still cannot yield another public claim.
 
 ## Workspace agreement
 
@@ -45,7 +45,7 @@ This is an implementation requirement for the scaffold ticket, not a claim that 
 
 All 33 ticket identifiers below link to individual issues containing the owning spec, explicit blockers, scope, and acceptance criteria. Each issue is labeled ready-for-agent; that triage label does not override unmet blockers.
 
-The initial implementation frontier is 01.01. After it completes, 01.02 and 03.01 can proceed in parallel. TODO-01 remains deferred; downstream tickets inherit its gate even if they do not list it as a direct blocker.
+The original implementation frontier was 01.01; determine the current frontier from individual ticket evidence. Treasury, funding, membership, proposal, voting, release, existing v1 recovery, and local scanning work do not depend on TODO-01. Publication and public claims need its approved shared credential/Merkle format; private proof implementation additionally needs qualified real browser/off-chain ZK. Do not wait for a Solidity ZK verifier, which is no longer required.
 
 ### Feature 01 — Browser application foundation
 
@@ -121,8 +121,8 @@ The initial implementation frontier is 01.01. After it completes, 01.02 and 03.0
 
 | ID | Specialized task | Blocked by | Verifiable result |
 | --- | --- | --- | --- |
-| [09.01](09-public-attendance-claims/issues/01-prepare-public-claim-proof.md) | Prepare a wallet-bound public-claim proof | 07.04 | An attendee explicitly opts in and generates a proof for the chosen wallet with a constrained per-credential nullifier. |
-| [09.02](09-public-attendance-claims/issues/02-submit-unique-public-claim.md) | Submit and enforce a unique public claim | 09.01 | The on-chain verifier records one wallet-event association; copied proofs, different recipients, and duplicate credentials cannot create another claim. |
+| [09.01](09-public-attendance-claims/issues/01-prepare-public-claim-proof.md) | Prepare a public-claim secret and membership witness | 07.04 | An attendee consents to irreversible disclosure and prepares the secret/path, with copying and front-running warnings. |
+| [09.02](09-public-attendance-claims/issues/02-submit-unique-public-claim.md) | Submit and enforce a unique public claim | 09.01 | Ordinary hash membership records the sender-event association and consumes the derived entry. Copied evidence may win the first claim, but cannot produce a second claim after consumption. |
 | [09.03](09-public-attendance-claims/issues/03-browse-public-claims.md) | Browse public claims by event and wallet | 09.02 | Read-only visitors inspect confirmed associations without confusing attendance with voting approval or payment. |
 
 ## Parallel work
@@ -132,9 +132,9 @@ The initial implementation frontier is 01.01. After it completes, 01.02 and 03.0
 - Proposal IPFS publication is not blocked by TODO-01. Public proposal documents do not use the attendance tree or ZK proof format.
 - After 03.03, public document reading, yes-vote work, and attendance QR generation can proceed independently. Yes-vote work additionally needs NFT issuance; attendance does not need successful voting or payment.
 - Fund release and attendance scanning can proceed independently.
-- Canonical attendance-tree publication and real proof work remain gated by deferred TODO-01. No mock proof may satisfy a real cryptographic acceptance criterion.
+- Canonical attendance-tree publication needs the approved shared format from active TODO-01. Private proof generation/verification additionally needs qualified browser ZK. Public hash claims do not wait for private-proof UI or Solidity ZK compatibility. No mock proof may satisfy a real cryptographic acceptance criterion.
 - After 07.03, off-chain verification can proceed using real benchmark fixtures and trusted verifier artifacts without waiting for proof-generation UI or the attendance-reader UI.
-- After 07.04, private witness/proof work and public-claim proof work can proceed independently using the agreed canonical formats.
+- After 07.04 and shared-format approval, private witness work and public secret/path claim work can proceed independently. Real private proving still requires its qualified prover/artifacts.
 
 ## Shared-interface coordination
 
@@ -143,11 +143,11 @@ The initial implementation frontier is 01.01. After it completes, 01.02 and 03.0
 - Establish each shared interface in its earliest owning ticket. Later tickets extend behavior without silently changing earlier semantics.
 - Keep workspace ownership explicit: contracts and scripts belong to contracts/tooling; frontend modules consume public artifacts. Root tooling coordinates rather than becoming a catch-all implementation package.
 - Avoid concurrent incompatible edits to shared contract state or deployment configuration. Coordinate those changes or land the owning interface first; separate features are not a promise of zero merge conflicts.
-- Public and private proofs share the reviewed credential relation but have different public statements. Do not leak a public-claim nullifier in private presentations.
+- Public hash membership and private ZK share credential/Merkle semantics, not a proof pipeline. Private presentations expose no stable entry identifier; public claims intentionally disclose the secret/path. New v2 hashing is authorized for investigation, not yet a selected format. Preserve frozen v1 behavior and never mix credential versions in a finalized set or reset claim consumption through a proof-format upgrade.
 - Publish cross-feature blocker links in each ticket, not only in this overview.
 
 ## Testing agreement
 
 The primary seam is the application action/read interface backed by real local contracts where transactions are involved. Markdown authoring also has a wallet-free browser path. Direct external contract calls cover permissions and bypass attempts. Real cryptographic round trips cover proof correctness once feasible. Replace external wallet/camera/IPFS/RPC transport only where deterministic tests need controlled failure or input, not the domain rules or verifier under test.
 
-Each spec records its testing decisions and the absence of prior implementation/tests. The approved ticket breakdown is now published. Implementation should follow the unblocked frontier and the strategic working rules in the project instructions; publication is not authorization to execute deferred research.
+Implementation should follow the unblocked frontier and the strategic working rules in the project instructions. TODO-01 research and isolated qualification tests are authorized; production format and public-claim cost approval remain outstanding.

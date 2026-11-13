@@ -5,20 +5,20 @@ Blocked by: TODO-01 and authenticated attendance publication
 
 ## Problem Statement
 
-Some attendees want a permanent public wallet–event association, but revealing the underlying attendance secret would let observers copy the credential. The claim must be verified on-chain, bound to its intended wallet, and limited to one public claim per credential.
+Some attendees want a permanent public wallet–event association. They explicitly accept disclosing a transferable attendance credential, allowing observers to copy it for private presentations or front-run the first public claim. The contract must verify finalized-set membership and permit only one public claim per entry in an event/deployment.
 
 ## Solution
 
-Let a credential holder explicitly opt into a public claim, generate a transparent ZK proof bound to the claiming wallet, and submit it for on-chain verification. Record the association and enforce a deterministic per-credential nullifier without publishing the secret.
+Let a credential holder explicitly opt into revealing the secret and Merkle path. The contract derives the entry, verifies its membership against the finalized event root with ordinary hashes, records the sender–event association, and atomically consumes the entry. No on-chain ZK verifier is required. The wallet signature used for recovery remains private.
 
 ## User Stories
 
 1. As a credential holder, I want to choose whether to publish my attendance, so that private attendance does not automatically become a public wallet record.
 2. As a credential holder, I want a clear permanence warning before claiming, so that I understand the privacy trade-off.
 3. As a credential holder, I want the intended claiming wallet displayed, so that I do not publish the association for the wrong account.
-4. As a credential holder, I want to generate the claim proof locally, so that my secret does not leave the browser.
-5. As a claimant, I want the secret hidden in my transaction, so that mempool observers cannot recover the credential from normal submission.
-6. As a claimant, I want my proof bound to my wallet, so that another account cannot copy the transaction and claim for itself.
+4. As a credential holder, I want to prepare the secret and membership path locally before explicitly opting into disclosure.
+5. As a claimant, I want a warning that public calldata permanently reveals my credential and allows observers to generate private presentations.
+6. As a claimant, I want a warning that a mempool observer can copy my credential and front-run the first claim for their own wallet; this is an accepted POC weakness.
 7. As a participant, I want one public claim per attendance credential, so that sharing a credential does not permit unlimited public claims.
 8. As a claimant, I want account or deployment changes to invalidate an obsolete prepared claim, so that I do not accidentally submit against the wrong public statement.
 9. As a claimant, I want transaction rejection and failure explained, so that I know whether a claim actually exists on-chain.
@@ -31,34 +31,34 @@ Let a credential holder explicitly opt into a public claim, generate a transpare
 
 ## Implementation Decisions
 
-- Use the transparent proof pipeline validated by TODO-01, with an on-chain verifier compatible with BNB Smart Chain testnet. Do not add an undisclosed trusted-setup wrapper to make verification cheaper.
-- Prove the same underlying attendance membership relation as private presentations, adding a claiming-wallet binding and constrained per-credential nullifier.
-- Scope the nullifier to the attendance credential and event/deployment so it cannot be varied by changing the claiming wallet to obtain another claim. Its derivation is part of the reviewed cryptographic format, not an arbitrary client-supplied identifier.
-- Enforce wallet binding in the proved public statement and contract execution. A copied valid proof must not authorize a different sender to claim for a different wallet.
-- Consume the nullifier only when a valid claim is recorded. Invalid transactions must not block the legitimate credential holder by reserving a nullifier.
-- Never include the secret, wallet signature used for recovery, leaf selection, or membership witness in calldata or events.
+- Use the canonical credential and Merkle format established by TODO-01, with ordinary hash/membership checks compatible with BNB Smart Chain testnet. No Solidity ZK verifier is required.
+- Accept a secret and Merkle path; derive the entry and verify membership against the event's authenticated finalized root. An already-public entry alone is not evidence of knowledge of its secret.
+- Scope consumed-entry storage to event/deployment. Derive the consumption key from the validated entry, never an arbitrary client-supplied identifier or recipient-dependent value.
+- Record the association for the transaction sender. A copied secret/path can authorize a different sender before consumption; front-running is explicitly accepted, not prevented by wallet display or client checks.
+- Consume the entry only when a valid claim is recorded. Invalid transactions must not reserve it.
+- Calldata deliberately reveals the secret and membership witness. Never publish the wallet signature used for recovery. Avoid redundant secret disclosure in events, which need only support public claim inspection.
 - The contract records one permanent public association for that credential. A second public claim with it fails even from another wallet; voluntarily sharing the underlying credential remains possible before claiming.
-- Claiming does not revoke the credential or consume private off-chain presentations. Private proofs must not publish the claim nullifier simply for convenience.
+- Claiming does not revoke the credential or consume private off-chain presentations. Anyone copying the revealed secret can now generate their own private presentations. Private proofs still hide their witness and expose no stable entry identifier.
 - Require an authenticated, finalized attendance root for the intended proposal. A valid attendance claim need not correspond to a passed or funded proposal.
-- Provide an explicit privacy opt-in before submission and display the target wallet and event. Regenerate or discard prepared claims when account, event, or deployment changes.
+- Provide an explicit privacy opt-in before submission and display the target wallet and event. Warn about irreversible credential disclosure, observer-generated private proofs, and front-running before opt-in. Regenerate or discard prepared claims when account, event, or deployment changes.
 - Expose public reads/events for event and wallet claim inspection without a backend indexer. Present transaction-submitted and claim-confirmed as different states.
 
 ## Testing Decisions
 
-- Test proof preparation, explicit opt-in, submission, and public inspection through the application action/read interface backed by real contracts and the selected real verifier.
-- Direct contract tests cover a copied proof from another wallet, changed recipient, altered nullifier, duplicate credential claims, altered event/root, and proof replay across deployments.
-- Verify nullifier constraints inside the actual proof relation: merely testing that the contract stores a caller-supplied nullifier is insufficient.
-- Confirm invalid submissions do not consume the nullifier, successful claims are permanent, and a second wallet cannot claim again with the same credential.
-- Inspect transaction inputs and events for absence of secrets and signatures. Verify a public claim does not disable private proof generation/verification.
+- Test witness preparation, explicit disclosure opt-in, submission, and public inspection through the application action/read interface backed by real contracts and canonical hash vectors.
+- Direct contract tests cover wrong secret/path, malformed encoding, altered event/root, deployment separation, duplicate claims across wallets, and consumption keyed by the derived entry.
+- Demonstrate the accepted weakness: another sender can submit copied valid secret/path first and receive the association. The original sender then fails as a duplicate; do not claim front-running protection.
+- Confirm invalid submissions consume nothing, successful claims are permanent, and a second wallet cannot claim again with the same entry.
+- Confirm calldata reveals the secret/path but never the recovery signature. Once private ZK exists, verify both the original holder and an observer with the disclosed secret can generate valid presentations.
 - Test wallet switching between preparation and submission, rejected transactions, and read-only claim discovery.
-- Reuse canonical proof artifacts, publication vectors, and foundation fixtures. No existing public-claim implementation exists.
+- Reuse canonical credential/Merkle vectors, publication fixtures, and foundation fixtures. No existing public-claim implementation exists.
 
 ## Out of Scope
 
-- Publishing raw secrets, identifying real-world people, preventing voluntary credential sharing, claim deletion, transfer, correction, or revocation.
+- Identifying real-world people, preventing credential copying or first-claim front-running, claim deletion, transfer, correction, or revocation. Secret disclosure is explicitly in scope.
 - Gasless relayers, alternate trusted-setup proof systems, mainnet deployments, and application-operated proving backends.
 - Treating a claim as evidence of successful voting, payment, audited spending, or independently verified physical presence.
 
 ## Further Notes
 
-Private and public proof implementations may share internal cryptographic work, but their public statements and privacy promises differ. Public-claim work need not wait for the private-proof UI once the shared cryptographic interface is established.
+Private ZK and public hash-membership implementations share canonical credential/Merkle semantics, not an on-chain ZK pipeline. Public-claim work need not wait for the private-proof UI once the shared cryptographic interface is approved. User confirmed this scope change on 2026-11-13; child tickets and the implementation map have been reconciled. Shared-format and concrete public-claim cost approvals remain required.

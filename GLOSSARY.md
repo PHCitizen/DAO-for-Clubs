@@ -73,7 +73,7 @@ The public, deduplicated collection of hashed attendance entries from which memb
 Evidence of attendance that reveals the event but not the holder's wallet or their entry in the published attendance set.
 
 **Public attendance claim**:
-An opt-in, permanent public association between a wallet and an event, established without publishing the attendance secret. Each credential permits only one public claim; its proof is bound to the claiming wallet. Public voting may also reveal associations, without implying attendance.
+An opt-in, permanent public association between a wallet and an event, established by revealing an attendance credential. Each credential permits only one public claim for that event. Disclosure allows observers to reuse the credential for private presentations or take the first public claim; these are accepted POC weaknesses. The association does not establish exclusive possession or personal identity. Public voting may also reveal associations, without implying attendance.
 
 **Off-chain attendance proof**:
 An attendance proof verified outside the blockchain against the event's attendance root obtained from the blockchain. It does not require disconnected verification.

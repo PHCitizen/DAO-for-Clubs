@@ -1,21 +1,25 @@
-# 01: Prepare a wallet-bound public-claim proof
+# 01: Prepare a public-claim secret and membership witness
 
 **ID:** 09.01
 **Spec:** [Feature 09: Opt-in public attendance claims](../spec.md)
-**What to build:** A credential holder explicitly chooses a permanent public wallet-event association and generates its real wallet-bound proof locally without revealing the attendance secret.
+**What to build:** A credential holder explicitly consents to disclosing the secret and Merkle path for a permanent public wallet-event association, then prepares the membership witness locally. No ZK proof is required for public claiming.
 **Blocked by:** [07.04 — Retrieve and validate the attendance set](../../07-attendance-publication/issues/04-validate-attendance-data.md).
 **Status:** ready-for-agent
 
 ## Acceptance criteria
 
-- [ ] Reuse supported credential recovery and validated membership reconstruction to prove attendance using the transparent system selected by TODO-01.
-- [ ] Display the intended wallet/event/deployment and require explicit consent explaining that a later submitted public association is permanent.
-- [ ] Constrain the claiming wallet and per-credential nullifier in the actual proof relation. Changing the wallet must not permit choosing a fresh nullifier for the same event credential.
-- [ ] Apply reviewed event/deployment separation and produce the public inputs expected by the eventual on-chain verifier; do not accept an unconstrained client-chosen uniqueness identifier.
-- [ ] Generate locally, exposing honest progress/failure and excluding secret, recovery signature, leaf selection, and path from public proof artifacts and logs.
+- [ ] Reuse supported versioned credential recovery and validated membership reconstruction under the canonical credential/Merkle format approved through TODO-01. Verify locally that the recovered secret derives the published entry and its path yields the finalized root.
+- [ ] Display the intended wallet/event/deployment and require explicit consent explaining permanence, public secret/path disclosure, observers' ability to generate private proofs, and first-claim front-running. These accepted risks must not be described as prevented by wallet binding.
+- [ ] Prepare the secret and canonical path for ordinary on-chain hash/membership verification. The consumed-entry key is derived by the contract from the validated entry, never a caller-chosen nullifier or recipient-dependent identifier.
+- [ ] Apply reviewed event/deployment and credential-version semantics. Do not allow a format change to create another claim for a consumed entry.
+- [ ] Prepare locally with honest progress/failure. Secret/path belong only in the explicit claim payload; exclude them from logs, telemetry, and redundant persistence. Never include the recovery signature in public payloads.
 - [ ] Discard or regenerate prepared claims after changes to wallet, event, or deployment. This preparation alone is not a recorded on-chain claim.
-- [ ] Real cryptographic tests cover valid preparation, wrong credential/root, changed wallet, changed nullifier, and deployment separation; application tests cover consent, switching, and failure feedback.
+- [ ] Canonical hash/vector tests cover valid preparation, wrong secret/root/path, malformed encoding, unsupported credential versions, and event/deployment separation. Application action/read tests cover disclosure consent, wallet switching, and failure feedback.
 
 ## Scope
 
-Private and public proofs share reviewed internals but not public statements; private presentations must not acquire the claim nullifier. This does not wait for the private-proof UI and inherits the deferred TODO-01 gate.
+Public hash-membership checks and private ZK share canonical credential/Merkle semantics, not a Solidity ZK verifier. This does not wait for the private-proof UI; it remains gated on the shared format agreement from the now-authorized TODO-01 investigation. Preserve the existing ticket filename for inbound links.
+
+## Comments
+
+2026-11-13: Reconciled with the user-approved public secret/path disclosure design. Credential copying and first-claim front-running are accepted weaknesses; duplicate public claims after consumption remain forbidden.

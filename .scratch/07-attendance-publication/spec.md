@@ -62,4 +62,4 @@ Let the event organizer preview a canonical hashed attendance set, pin it to IPF
 
 ## Further Notes
 
-The deferred investigation is recorded as TODO-01. This spec is ready as a work contract, but implementation of the canonical tree and real publication flow is gated on that result. Individual tickets must carry that dependency rather than interpreting the status as authorization to guess a cryptographic format.
+The active investigation is recorded as TODO-01. Canonical tree/publication work requires its approved shared credential/Merkle format, not completion of a Solidity ZK verifier or private-proof UI. Public claims reveal the secret/path and use ordinary hash membership; private proofs alone require ZK. Primitive Poseidon2 vector agreement is evidence, not format approval. Finalized sets must use one immutable credential version and must not silently reinterpret v1 entries or reset public-claim consumption through upgrades.

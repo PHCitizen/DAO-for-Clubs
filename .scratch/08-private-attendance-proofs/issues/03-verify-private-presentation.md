@@ -18,4 +18,4 @@
 
 ## Scope
 
-This can proceed independently of the proof-generation and dataset-reader UIs using the canonical real benchmark artifacts. It inherits the deferred TODO-01 gate and may not replace verification with mocked success or a signature-only check.
+This can proceed independently of the proof-generation and dataset-reader UIs using canonical real benchmark artifacts. It inherits active TODO-01's private off-chain ZK qualification gate and may not replace verification with mocked success or a signature-only check. No Solidity ZK verifier is required. Acceptance establishes possession, including by observers of disclosed public credentials, not exclusive ownership or identity.
