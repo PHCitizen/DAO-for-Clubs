@@ -17,4 +17,4 @@
 
 ## Scope
 
-No trusted-setup fallback, server proving, fake proof acceptance, personal identity guarantee, or restriction on forwarding a proof file. The deferred feasibility gate is inherited.
+No trusted-setup fallback, server proving, fake proof acceptance, personal identity guarantee, or restriction on forwarding a proof file. Active TODO-01's private browser-ZK qualification and shared-format gates are inherited; no Solidity ZK verifier is required. Observers of disclosed public credentials can generate private proofs; do not promise exclusive possession.

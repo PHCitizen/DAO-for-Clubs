@@ -17,4 +17,4 @@
 
 ## Scope
 
-A successful pin is not finalization. No backend, permanent-availability guarantee, correction mechanism, or second IPFS abstraction is introduced. Canonical format work inherits the deferred TODO-01 gate.
+A successful pin is not finalization. No backend, permanent-availability guarantee, correction mechanism, or second IPFS abstraction is introduced. Canonical format work inherits active TODO-01's shared-format gate, not a Solidity ZK-verifier requirement.

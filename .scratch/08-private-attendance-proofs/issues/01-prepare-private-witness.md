@@ -17,4 +17,4 @@
 
 ## Scope
 
-This ends with local proof readiness, not a downloadable proof or on-chain claim. Credentials remain transferable. Cryptographic construction and supported sizes inherit TODO-01's result and deferred gate.
+This ends with local proof readiness, not a downloadable proof or on-chain claim. Credentials remain transferable. Construction and supported sizes inherit active TODO-01's shared-format gate. Public claims disclose reusable credentials; observers can prepare private witnesses too. No Solidity ZK verifier is required.

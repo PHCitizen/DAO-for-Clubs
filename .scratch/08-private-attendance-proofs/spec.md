@@ -61,4 +61,4 @@ Generate a real ZK attendance presentation in the browser and export it as a fil
 
 ## Further Notes
 
-After the canonical proof interface and artifacts are agreed, generation and verification tickets can proceed in parallel. They share versioned public formats rather than each waiting for the other's UI. TODO-01 remains explicitly deferred until separately resumed.
+After the canonical proof interface and artifacts are agreed, generation and verification tickets can proceed in parallel. They share versioned public formats rather than each waiting for the other's UI. TODO-01 is authorized and active; its private browser/off-chain ZK qualification remains a real blocker. No Solidity ZK verifier is required. Public claiming discloses the secret/path, so observers can generate private presentations too; private ZK does not restore secrecy or establish exclusive possession after disclosure.

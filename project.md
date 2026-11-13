@@ -72,15 +72,21 @@ The treasury administrator is trusted: minting and burning can influence voting 
 
 ## Attendance credentials and recovery
 
+The serialization and SHA-256 derivation below describe implemented v1.
+The user has authorized a new credential version using prover-appropriate
+hashing, accepting regenerated QR entries. Select and benchmark the matched
+prover/hash configuration under TODO-01 before approving a replacement format;
+do not silently change v1 semantics. See `todos/01-transparent-zk-feasibility.md`.
+
 The browser must never request a wallet's raw private key.
 
-Use a reproducible wallet signature over an event-specific message:
+Use a reproducible wallet signature over an event-specific message. The authoritative frozen serialization, signing method, ABI types, and recovery limitations are in `docs/attendance-credentials.md`:
 
 ```text
-dao-for-clubs attendance secret v1
-chainId: <chain ID>
-contract: <canonical DAO contract address>
-proposalId: <proposal ID>
+DAO for Clubs attendance v1
+Chain ID: <decimal chain id>
+DAO: <EIP-55 checksummed DAO address>
+Proposal ID: <decimal proposal id>
 ```
 
 Derive the secret and QR entry as follows:
@@ -91,7 +97,7 @@ secret = sha256(abi_encode(signature, proposalId))
 qrValue = sha256(abi_encode(proposalId, secret))
 ```
 
-- Fix the exact message serialization, address representation, signing method, and ABI types before implementation so recovery reproduces the same inputs.
+- Follow the frozen four-line message (LF separators, no trailing newline), EIP-191 `personal_sign`, address representation, and ABI types in `docs/attendance-credentials.md` so recovery reproduces the same inputs.
 - Scope the POC to a tested wallet/signing method that reproduces the same signature. Universal recovery across wallets, especially smart-contract wallets, is not promised.
 - Re-signing the same message recovers the attendance secret with the supported wallet.
 - Keep signatures and secrets private. Neither belongs in QR codes, IPFS data, nor blockchain transactions.
@@ -130,17 +136,18 @@ Attendance collection and publication are independent of voting and payment. A p
 ### Opt-in public claim
 
 - The attendee can publish a permanent wallet–event association on-chain.
-- Use a ZK proof bound to the claiming wallet; do not reveal the attendance secret.
-- A per-credential nullifier permits only one public claim for that credential.
-- A copied transaction proof must not permit claiming for a different wallet.
+- Reveal the credential secret and Merkle membership path. The contract derives the entry and verifies its membership against the event's finalized root using ordinary hash checks, not ZK.
+- Record the association for the transaction sender and consume the entry once per event/deployment. Changing wallets does not permit a second public claim after consumption; invalid claims consume nothing.
+- Public calldata permanently exposes the credential. Observers can copy it, generate private ZK presentations, or front-run an unconsumed public claim for their own wallet. These are explicitly accepted POC weaknesses; warn before submission. A public claim no longer proves exclusive credential possession by its recorded wallet.
+- Never publish the wallet signature used for recovery. Public claiming does not revoke the credential or prevent private presentations by anyone who now knows its secret.
 - Public voting can also reveal associations between wallets and events. This is acceptable for the POC and does not itself establish attendance.
 
 ### Proof-system requirements and feasibility
 
 - Require a transparent proof system: no trusted setup ceremony.
-- Support browser-side proving, off-chain verification, and public-claim verification on BNB Smart Chain testnet.
-- The concrete proof system is not selected yet. Benchmark browser performance and on-chain verification gas before committing to an implementation.
-- Validate the cost of the SHA-256 credential/Merkle construction and any necessary circuit or VM integration during that feasibility work. Do not silently relax the transparent-setup requirement.
+- Support browser-side private proving and off-chain ZK verification. No Solidity ZK verifier or browser-to-EVM ZK pipeline is required.
+- The concrete proof system is not selected yet. Benchmark browser performance and private-verification correctness before committing to an implementation. Measure ordinary public-claim hash/membership verification separately on BNB Smart Chain testnet.
+- Evaluate a matched proof-friendly v2 credential/Merkle hash with reproducible browser, constraint, and Solidity membership vectors. Do not silently relax the transparent-setup requirement for private proofs.
 
 ## Technology and deployment
 

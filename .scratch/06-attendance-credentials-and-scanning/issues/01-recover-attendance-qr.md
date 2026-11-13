@@ -9,7 +9,7 @@
 ## Acceptance criteria
 
 - [ ] Freeze the exact versioned signing-message serialization, including application label, chain ID, canonical DAO address, and proposal ID, with canonical address representation and a specified signing method.
-- [ ] Derive the secret using SHA-256 over ABI-encoded signature and proposal ID, then derive the QR entry using SHA-256 over ABI-encoded proposal ID and secret. Fix ABI types and signature-byte handling with reproducible vectors.
+- [ ] For existing v1, preserve the exact message, SHA-256 derivation, ABI types and signature bytes in `docs/attendance-credentials.md` with reproducible vectors. A proof-friendly v2 and regenerated QRs are authorized in principle, but require TODO-01 shared-format approval before implementation; never silently reinterpret v1 or mix versions.
 - [ ] Document and test a real supported wallet/signing method that reproduces the signature; explain that recovery is not guaranteed for all wallets or account migrations.
 - [ ] The QR includes chain ID, DAO address, proposal ID, and hashed entry only. It excludes the secret, signature, attendee address, and names; never request the raw private key.
 - [ ] Repeat signing with the supported account/method recovers the same event entry, while different event/deployment inputs remain separated.

@@ -63,7 +63,7 @@ Provide a Markdown editor with a safe preview, publish the proposal document to 
 - Public voting logic, passing checks, payout execution, and attendance attestations.
 - Post-publication amendments, collaborative editing, document history, proposal cancellation, private proposal documents, and a full document-management system.
 - Application-operated pinning, shared embedded credentials, and guarantees of permanent IPFS availability.
-- Waiting for transparent-ZK feasibility: public proposal documents do not depend on the deferred attendance proof-system investigation.
+- Waiting for transparent-ZK feasibility: public proposal documents do not depend on the active attendance proof-system investigation.
 
 ## Further Notes
 

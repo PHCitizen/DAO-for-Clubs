@@ -17,4 +17,4 @@
 
 ## Scope
 
-No proof generation or cryptographic verification substitute is introduced. This supplies validated public data; private witness selection remains local to each credential holder. The deferred TODO-01 gate is inherited.
+No proof generation or cryptographic verification substitute is introduced. This supplies validated public data and canonical paths for private ZK and public secret/path hash claims. Active TODO-01's shared-format gate is inherited; no Solidity ZK verifier is required.

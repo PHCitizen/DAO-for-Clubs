@@ -61,4 +61,4 @@ Derive an event-specific secret from a reproducible signature made by a supporte
 
 ## Further Notes
 
-This feature can proceed without the deferred proof-system investigation because the secret and QR-entry derivation are already agreed. It must not silently select the eventual Merkle-tree construction. The publication feature owns that construction after TODO-01 resolves compatibility and feasibility.
+Existing v1 recovery and scanning can proceed without completing active TODO-01; the SHA-256 rules above describe frozen v1 only. A proof-friendly v2 and regenerated QRs are authorized in principle, but require shared-format approval before implementation. Preserve v1 vectors and reject mixed-version finalized sets under the agreed transition policy. Publication owns the canonical Merkle construction. Public claims reveal the secret/path for ordinary hash membership; only private presentations require ZK.

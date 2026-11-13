@@ -17,7 +17,7 @@
 
 ## Scope
 
-This produces a pinned document reference, not an on-chain proposal. Proposal publication does not depend on the deferred transparent-ZK investigation.
+This produces a pinned document reference, not an on-chain proposal. Proposal publication does not depend on the active transparent-ZK investigation.
 
 ## Comments
 
