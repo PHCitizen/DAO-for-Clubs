@@ -4,6 +4,7 @@ import type { PublishedProposalResult } from '../../application'
 import { app } from '../../applicationInstance'
 import { ReadFailure } from './-ReadFailure'
 import { AttendanceScanPanel } from './-attendance'
+import { PrivateAttendanceProofPanel, PrivateAttendanceVerifierPanel } from './-private-attendance'
 import { ProposalVotingPanel } from './-vote'
 import { PublicBallotList } from './-ballots'
 import { ProposalFundingPanel } from './-release'
@@ -48,6 +49,8 @@ function ProposalDetailPage() {
           <PublicBallotList key={`ballots-${proposalId}`} id={numericId} />
           <ProposalFundingPanel key={`funding-${proposalId}`} id={numericId} />
           <AttendanceScanPanel key={`attendance-${proposalId}`} id={numericId} />
+          <PrivateAttendanceProofPanel key={`private-attendance-${proposalId}`} id={numericId} />
+          <PrivateAttendanceVerifierPanel key={`attendance-verifier-${proposalId}`} />
         </>
       )}
     </main>
