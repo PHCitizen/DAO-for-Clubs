@@ -1,4 +1,4 @@
-import { writeFile, readFile } from 'node:fs/promises'
+import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createPublicClient, createWalletClient, http, type Abi, type Hex } from 'viem'
@@ -81,17 +81,18 @@ async function deployContracts() {
   console.log(`DAO deployed at: ${daoAddress}`)
 
   // Update public manifest
-  const rawManifest = await readFile(manifestPath, 'utf8')
-  const manifest = JSON.parse(rawManifest)
-  manifest.chainId = chainId
-  manifest.daoAddress = daoAddress
-  manifest.testUsdAddress = testUsdAddress
-  manifest.artifacts = {
-    DAO: 'contracts/DAO.sol/DAO.json',
-    TestUSD: 'contracts/TestUSD.sol/TestUSD.json',
-    Treasury: 'contracts/Treasury.sol/Treasury.json',
+  const manifest = {
+    chainId,
+    daoAddress,
+    testUsdAddress,
+    artifacts: {
+      DAO: 'contracts/DAO.sol/DAO.json',
+      TestUSD: 'contracts/TestUSD.sol/TestUSD.json',
+      Treasury: 'contracts/Treasury.sol/Treasury.json',
+    },
   }
 
+  await mkdir(dirname(manifestPath), { recursive: true })
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
   console.log('Updated deployments/public.json')
 }

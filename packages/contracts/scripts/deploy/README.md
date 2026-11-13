@@ -8,6 +8,8 @@ Start `pnpm dev:chain` in another terminal, then run `pnpm deploy:local` from
 the workspace root. This builds the contracts, deploys shared TestUSD and the DAO,
 updates `packages/contracts/deployments/public.json`, and exports the addresses
 and ABIs to `packages/frontend/src/generated/public-artifacts.json` for the UI.
+Both JSON files are gitignored local outputs. Run deployment before starting,
+building, testing, or typechecking the frontend on a fresh checkout.
 
 The node's first unlocked account is both the deployer and TestUSD currency
 administrator. No private key or environment file is required. Connect that

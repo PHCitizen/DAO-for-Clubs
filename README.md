@@ -17,22 +17,23 @@ or Yarn lockfiles.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm dev
+pnpm dev:chain
 ```
 
-Open <http://localhost:3000>. The welcome page works without a wallet, running
-chain, credentials, or environment file.
-
-In another terminal, optionally start the real local EVM:
+Keep the local EVM running. In another terminal, generate the deployment
+configuration before starting the app:
 
 ```sh
-pnpm dev:chain
+pnpm deploy:local
+pnpm dev
 ```
 
 RPC: `http://127.0.0.1:8545`, chain ID: **31337**. The node is loopback-only and
 state resets when restarted. Hardhat prints development accounts; these accounts
 are public test fixtures, not secrets to reuse or fund on a public network.
-No private keys are required by the deployment script.
+No private keys are required by the deployment script. Open
+<http://localhost:3000>. Deployment addresses and the frontend's generated
+addresses/ABIs are local, gitignored files; every developer must generate them.
 
 ### Deploy locally and configure the UI
 
@@ -64,6 +65,9 @@ pnpm --filter @dao/contracts test    # real EVM transfer test
 pnpm --filter @dao/contracts build
 pnpm --filter @dao/contracts typecheck
 ```
+
+Run `pnpm deploy:local` before these checks on a fresh checkout, since frontend
+tests, builds, and TypeScript checks consume the generated public artifact file.
 
 The first Hardhat build/test downloads the pinned Solidity compiler and therefore
 needs internet access. Tests create isolated in-process EVMs and do not require
@@ -131,7 +135,8 @@ installation, builds, or behavioral tests.
 - [Public artifact handoff](docs/public-artifacts.md): generated ABI/deployment
   JSON is the only cross-package browser input.
 
-No environment configuration is needed for local deployment. Until deployment,
-the public manifest may have null DAO/TestUSD addresses. Never put private
+No environment configuration is needed for local deployment. The public manifest
+and generated frontend artifact are gitignored and created by `pnpm deploy:local`.
+Never put private
 credentials in `VITE_*` variables: they are public browser build inputs. Keep
 deployment credentials in ignored local configuration owned by contracts/tooling.
