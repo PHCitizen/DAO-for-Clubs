@@ -36,6 +36,18 @@ import {
   TreasuryChainMismatchError,
 } from './treasury.js'
 import {
+  type MintVotingNftOutcome,
+  type MembershipChain,
+  type MembershipConfig,
+  type VotingMembership,
+  mintVotingNft,
+  readVotingMembership,
+  MembershipChainMismatchError,
+  VotingNftConfirmationError,
+  VotingNftMintRevertedError,
+  VotingNftSubmissionError,
+} from './membership.js'
+import {
   type MintTestUsdOutcome,
   type TestUsdChain,
   type TestUsdConfig,
@@ -260,8 +272,80 @@ export interface MintTestUsdRequest {
   amount: string
 }
 
-function toTreasuryReadFailure(error: unknown): TreasuryReadFailure {
-  if (error instanceof TreasuryChainMismatchError) {
+// ---------------------------------------------------------------------------
+// Voting NFT membership results
+// ---------------------------------------------------------------------------
+
+export type VotingMembershipResult =
+  | {
+      status: 'success'
+      chainId: number
+      membership: VotingMembership
+    }
+  | {
+      status: 'not-found'
+      address: string
+      reason: 'invalid-address' | 'unregistered'
+    }
+  | TreasuryReadFailure
+
+export type MintVotingNftFailure =
+  | {
+      status: 'wallet-not-connected'
+      message: string
+    }
+  | {
+      status: 'wallet-unavailable'
+      message: string
+    }
+  | {
+      status: 'wallet-rejected'
+      message: string
+    }
+  | {
+      status: 'stale-configuration'
+      message: string
+    }
+  | {
+      status: 'transaction-failed'
+      stage: 'submission' | 'reverted' | 'confirmation'
+      message: string
+      error: string
+      hash?: Hex
+    }
+
+export type MintVotingNftResult =
+  | Exclude<MintVotingNftOutcome, { status: 'unknown-treasury' }>
+  | { status: 'not-found'; address: string; reason: 'invalid-address' | 'unregistered' }
+  | MintVotingNftFailure
+  | TreasuryReadFailure
+
+export interface MintVotingNftRequest {
+  treasury: string
+  holder: string
+}
+
+// ---------------------------------------------------------------------------
+// Shared chain error mapping
+// ---------------------------------------------------------------------------
+
+/** Constructor shape shared by the per-domain chain-mismatch error classes. */
+type ChainMismatchErrorType = new (
+  expectedChainId: number,
+  actualChainId: number
+) => Error & { readonly expectedChainId: number; readonly actualChainId: number }
+
+/**
+ * Maps the shared chain-read error taxonomy (chain mismatch, RPC failure) to a
+ * public read failure. Each domain supplies its own mismatch error class and
+ * RPC failure message.
+ */
+function toChainReadFailure(
+  error: unknown,
+  mismatchError: ChainMismatchErrorType,
+  rpcUnavailableMessage: string
+): TreasuryReadFailure {
+  if (error instanceof mismatchError) {
     return {
       status: 'chain-mismatch',
       expectedChainId: error.expectedChainId,
@@ -270,31 +354,136 @@ function toTreasuryReadFailure(error: unknown): TreasuryReadFailure {
   }
   return {
     status: 'rpc-unavailable',
-    message: 'Treasury reads could not reach the configured RPC endpoint.',
+    message: rpcUnavailableMessage,
     error: error instanceof Error ? error.message : String(error),
   }
 }
 
-function toTestUsdReadFailure(error: unknown): TreasuryReadFailure {
-  if (error instanceof TestUsdChainMismatchError) {
+/** Per-domain error classes of one mint action's error taxonomy. */
+interface MintErrorTaxonomy {
+  ChainMismatchError: ChainMismatchErrorType
+  MintRevertedError: new (hash: Hex) => Error & { readonly hash: Hex }
+  ConfirmationError: new (
+    message: string,
+    hash?: Hex | null
+  ) => Error & { readonly hash: Hex | null }
+  SubmissionError: new (message: string, cause: unknown) => Error & { readonly cause: unknown }
+}
+
+/** Per-domain copy for the mapped mint failures. */
+interface MintFailureCopy {
+  revertedMessage: string
+  rpcUnavailableMessage: string
+}
+
+/**
+ * Maps the shared mint-action error taxonomy (stale preparation, chain
+ * mismatch, wallet rejection, submission failure, revert, confirmation
+ * failure, RPC failure) to public failure results.
+ */
+function toMintFailure(
+  error: unknown,
+  errors: MintErrorTaxonomy,
+  copy: MintFailureCopy
+): MintTestUsdFailure | TreasuryReadFailure {
+  if (error instanceof StaleActionConfigurationError) {
+    return { status: 'stale-configuration', message: error.message }
+  }
+  if (error instanceof errors.ChainMismatchError) {
     return {
       status: 'chain-mismatch',
       expectedChainId: error.expectedChainId,
       actualChainId: error.actualChainId,
     }
   }
+  if (error instanceof errors.MintRevertedError) {
+    return {
+      status: 'transaction-failed',
+      stage: 'reverted',
+      message: copy.revertedMessage,
+      error: error.message,
+      hash: error.hash,
+    }
+  }
+  if (error instanceof errors.ConfirmationError) {
+    return {
+      status: 'transaction-failed',
+      stage: 'confirmation',
+      message: error.message,
+      error: error.message,
+      ...(error.hash === null ? {} : { hash: error.hash }),
+    }
+  }
+  if (error instanceof errors.SubmissionError) {
+    const cause = error.cause
+    const rejected =
+      cause instanceof TransactionRejectedError ||
+      (cause !== null && typeof cause === 'object' && 'code' in cause && cause.code === 4001)
+    if (rejected) {
+      return {
+        status: 'wallet-rejected',
+        message: 'The mint transaction was rejected in your wallet. Nothing was submitted.',
+      }
+    }
+    return {
+      status: 'transaction-failed',
+      stage: 'submission',
+      message: 'The mint transaction was not submitted.',
+      error: error.message,
+    }
+  }
   return {
     status: 'rpc-unavailable',
-    message: 'TestUSD reads could not reach the configured RPC endpoint.',
+    message: copy.rpcUnavailableMessage,
     error: error instanceof Error ? error.message : String(error),
   }
+}
+
+function toMembershipReadFailure(error: unknown): TreasuryReadFailure {
+  return toChainReadFailure(
+    error,
+    MembershipChainMismatchError,
+    'Voting NFT membership could not reach the configured RPC endpoint.'
+  )
+}
+
+function toMintVotingNftFailure(error: unknown): MintVotingNftResult {
+  return toMintFailure(
+    error,
+    {
+      ChainMismatchError: MembershipChainMismatchError,
+      MintRevertedError: VotingNftMintRevertedError,
+      ConfirmationError: VotingNftConfirmationError,
+      SubmissionError: VotingNftSubmissionError,
+    },
+    {
+      revertedMessage: 'The mint transaction reverted on-chain. No voting NFT was minted.',
+      rpcUnavailableMessage: 'Voting NFT minting could not reach the configured RPC endpoint.',
+    }
+  )
+}
+
+function toTreasuryReadFailure(error: unknown): TreasuryReadFailure {
+  return toChainReadFailure(
+    error,
+    TreasuryChainMismatchError,
+    'Treasury reads could not reach the configured RPC endpoint.'
+  )
+}
+
+function toTestUsdReadFailure(error: unknown): TreasuryReadFailure {
+  return toChainReadFailure(
+    error,
+    TestUsdChainMismatchError,
+    'TestUSD reads could not reach the configured RPC endpoint.'
+  )
 }
 
 function toPreparedActionFailure(error: unknown): MintTestUsdFailure | TreasuryReadFailure {
   if (error instanceof WalletNotConnectedError) {
     return {
       status: 'wallet-not-connected',
-      message: 'Connect the designated TestUSD administrator wallet to mint.',
+      message: 'Connect the authorized administrator wallet to mint.',
     }
   }
   if (error instanceof DeploymentNotDeployedError) {
@@ -328,53 +517,19 @@ function toPreparedActionFailure(error: unknown): MintTestUsdFailure | TreasuryR
 }
 
 function toMintTestUsdFailure(error: unknown): MintTestUsdResult {
-  if (error instanceof StaleActionConfigurationError) {
-    return { status: 'stale-configuration', message: error.message }
-  }
-  if (error instanceof TestUsdChainMismatchError) {
-    return {
-      status: 'chain-mismatch',
-      expectedChainId: error.expectedChainId,
-      actualChainId: error.actualChainId,
+  return toMintFailure(
+    error,
+    {
+      ChainMismatchError: TestUsdChainMismatchError,
+      MintRevertedError: TestUsdMintRevertedError,
+      ConfirmationError: TestUsdConfirmationError,
+      SubmissionError: TestUsdSubmissionError,
+    },
+    {
+      revertedMessage: 'The mint transaction reverted on-chain. No currency was minted.',
+      rpcUnavailableMessage: 'TestUSD minting could not reach the configured RPC endpoint.',
     }
-  }
-  if (error instanceof TestUsdMintRevertedError) {
-    return {
-      status: 'transaction-failed',
-      stage: 'reverted',
-      message: 'The mint transaction reverted on-chain. No currency was minted.',
-      error: error.message,
-      hash: error.hash,
-    }
-  }
-  if (error instanceof TestUsdConfirmationError) {
-    return {
-      status: 'transaction-failed',
-      stage: 'confirmation',
-      message: error.message,
-      error: error.message,
-      ...(error.hash === null ? {} : { hash: error.hash }),
-    }
-  }
-  if (error instanceof TestUsdSubmissionError) {
-    if (error.cause instanceof TransactionRejectedError) {
-      return {
-        status: 'wallet-rejected',
-        message: 'The mint transaction was rejected in your wallet. Nothing was submitted.',
-      }
-    }
-    return {
-      status: 'transaction-failed',
-      stage: 'submission',
-      message: 'The mint transaction was not submitted.',
-      error: error.message,
-    }
-  }
-  return {
-    status: 'rpc-unavailable',
-    message: 'TestUSD minting could not reach the configured RPC endpoint.',
-    error: error instanceof Error ? error.message : String(error),
-  }
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +647,40 @@ export function createApplication(
             })
           },
           waitForTransactionReceipt: (hash: Hex): Promise<TestUsdTransactionReceipt> => {
+            if (!rpc!.waitForTransactionReceipt) {
+              throw new RpcUnavailableError('Transaction confirmation is not available.')
+            }
+            return rpc!.waitForTransactionReceipt(hash)
+          },
+        }
+      : null
+
+  const membershipConfig: MembershipConfig | null = deploymentContext.daoAddress
+    ? {
+        chainId: deploymentContext.chainId,
+        daoAddress: deploymentContext.daoAddress,
+        daoAbi: publicAbis.DAO,
+        treasuryAbi: publicAbis.Treasury,
+      }
+    : null
+
+  const membershipChain: MembershipChain | null =
+    rpc?.readContract && membershipConfig
+      ? {
+          getChainId: () => rpc!.getChainId(),
+          readContract: <T>(request: Parameters<NonNullable<RpcAdapter['readContract']>>[0]) =>
+            rpc!.readContract!<T>(request),
+          sendTransaction: async (request) => {
+            if (!adapter) throw new WalletUnavailableError()
+            return adapter.sendTransaction({
+              from: request.from,
+              to: request.address,
+              abi: request.abi,
+              functionName: request.functionName,
+              args: request.args,
+            })
+          },
+          waitForTransactionReceipt: async (hash: Hex) => {
             if (!rpc!.waitForTransactionReceipt) {
               throw new RpcUnavailableError('Transaction confirmation is not available.')
             }
@@ -919,6 +1108,83 @@ export function createApplication(
         })
       } catch (err) {
         return toMintTestUsdFailure(err)
+      }
+    },
+
+    /**
+     * Reads a registered treasury's voting membership: administrator, live
+     * voting NFT supply, and — when a holder address is given — that holder's
+     * confirmed credentials. Wallet-free and scoped to the configured DAO.
+     */
+    async readVotingMembership(treasury: string, holder?: string): Promise<VotingMembershipResult> {
+      if (!membershipChain || !membershipConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'Voting membership inspection requires a configured DAO deployment and RPC endpoint.',
+        }
+      }
+      if (!isAddress(treasury)) {
+        return { status: 'not-found', address: treasury, reason: 'invalid-address' }
+      }
+      if (holder !== undefined && !isAddress(holder)) {
+        return { status: 'not-found', address: holder, reason: 'invalid-address' }
+      }
+      try {
+        const membership = await readVotingMembership(membershipChain, membershipConfig, treasury, holder)
+        if (membership === null) {
+          return { status: 'not-found', address: treasury, reason: 'unregistered' }
+        }
+        return { status: 'success', chainId: deploymentContext.chainId, membership }
+      } catch (err) {
+        return toMembershipReadFailure(err)
+      }
+    },
+
+    /**
+     * Mints a fresh non-transferable voting NFT through the connected treasury
+     * administrator wallet, waits for confirmation, and reports the confirmed
+     * token ID, live supply, and holder credentials.
+     */
+    async mintVotingNft(request: MintVotingNftRequest): Promise<MintVotingNftResult> {
+      if (!membershipChain || !membershipConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'Voting NFT minting requires a configured DAO deployment and RPC endpoint.',
+        }
+      }
+      if (!isAddress(request.treasury)) {
+        return { status: 'not-found', address: request.treasury, reason: 'invalid-address' }
+      }
+      if (!adapter) {
+        return {
+          status: 'wallet-unavailable',
+          message: 'No wallet extension is available to sign the mint transaction.',
+        }
+      }
+
+      let prepared
+      try {
+        prepared = await this.prepareDeploymentAction({ target: request.treasury })
+      } catch (err) {
+        return toPreparedActionFailure(err)
+      }
+
+      try {
+        prepared.assertValid()
+        const outcome = await mintVotingNft(membershipChain, membershipConfig, {
+          from: prepared.context.account,
+          treasury: request.treasury,
+          holder: request.holder,
+          assertValid: prepared.assertValid,
+        })
+        if (outcome.status === 'unknown-treasury') {
+          return isAddress(outcome.treasury)
+            ? { status: 'not-found', address: outcome.treasury, reason: 'unregistered' }
+            : { status: 'not-found', address: outcome.treasury, reason: 'invalid-address' }
+        }
+        return outcome
+      } catch (err) {
+        return toMintVotingNftFailure(err)
       }
     },
 

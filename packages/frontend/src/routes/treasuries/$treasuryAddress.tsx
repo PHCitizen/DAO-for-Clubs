@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useCallback, useEffect, useState } from 'react'
 import type { TreasuryDetailResult } from '../../application'
 import { app } from '../../applicationInstance'
+import { MembershipPanel } from './-membership'
 
 export const Route = createFileRoute('/treasuries/$treasuryAddress')({
   component: TreasuryDetailPage,
@@ -50,6 +51,9 @@ function TreasuryDetailPage() {
       </header>
 
       <TreasuryDetailBody state={state} onRetry={() => void load()} />
+      {state !== 'loading' && state.status === 'success' && (
+        <MembershipPanel app={app} treasuryAddress={state.treasury.address} />
+      )}
     </main>
   )
 }
