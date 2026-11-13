@@ -14,9 +14,11 @@ export const Route = createRootRoute({
 
 function Root() {
   return (
-    <html lang="en">
-      <head><HeadContent /></head>
-      <body>
+    <html lang="en" className="dark">
+      <head>
+        <HeadContent />
+      </head>
+      <body className="min-h-screen bg-page text-text-primary antialiased selection:bg-binance-yellow/20 selection:text-binance-yellow">
         <Outlet />
         <Scripts />
       </body>
