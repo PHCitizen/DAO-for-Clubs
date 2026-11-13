@@ -32,7 +32,26 @@ pnpm dev:chain
 RPC: `http://127.0.0.1:8545`, chain ID: **31337**. The node is loopback-only and
 state resets when restarted. Hardhat prints development accounts; these accounts
 are public test fixtures, not secrets to reuse or fund on a public network.
-No private keys are committed. The scaffold deploys nothing.
+No private keys are required by the deployment script.
+
+### Deploy locally and configure the UI
+
+With `pnpm dev:chain` running in another terminal:
+
+```sh
+pnpm deploy:local
+pnpm dev
+```
+
+This builds and deploys TestUSD and the DAO, then updates the public manifest
+and the frontend's generated addresses/ABIs. Open <http://localhost:3000/testusd>
+and connect the node's first development account on chain 31337 to mint TestUSD.
+That account is the currency administrator; treasury administration alone cannot
+mint currency. No private key is stored in the frontend.
+
+Rerun deployment after restarting the local chain, which clears its state.
+Each deployment creates fresh contracts and replaces the UI's configured
+addresses. Reload a running dev UI, or rebuild a production preview afterward.
 
 ## Verify
 
@@ -112,8 +131,7 @@ installation, builds, or behavioral tests.
 - [Public artifact handoff](docs/public-artifacts.md): generated ABI/deployment
   JSON is the only cross-package browser input.
 
-No environment configuration is needed for this ticket. The checked-in public
-manifest explicitly has null DAO/TestUSD addresses. Network/RPC selection and
-wallet connection belong to subsequent tickets. Never put private credentials
-in `VITE_*` variables: they are public browser build inputs. Keep future
+No environment configuration is needed for local deployment. Until deployment,
+the public manifest may have null DAO/TestUSD addresses. Never put private
+credentials in `VITE_*` variables: they are public browser build inputs. Keep
 deployment credentials in ignored local configuration owned by contracts/tooling.

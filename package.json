@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "pnpm --filter @dao/frontend dev",
     "dev:chain": "pnpm --filter @dao/contracts dev",
+    "deploy:local": "pnpm --filter @dao/contracts deploy:local",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",

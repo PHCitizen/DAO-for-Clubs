@@ -1,21 +1,32 @@
 import { writeFile, readFile } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createPublicClient, createWalletClient, http, type Address, type Hex } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
+import { createPublicClient, createWalletClient, http, type Abi, type Hex } from 'viem'
 import { hardhat } from 'viem/chains'
-import { loadArtifact } from '../../test/fixtures.js'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const manifestPath = resolve(currentDir, '../../deployments/public.json')
 
-// Default local Hardhat account #0 private key
-const DEFAULT_LOCAL_KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
+async function loadArtifact(name: string): Promise<{ abi: Abi; bytecode: Hex }> {
+  const path = resolve(currentDir, `../../artifacts/contracts/${name}.sol/${name}.json`)
+  return JSON.parse(await readFile(path, 'utf8'))
+}
+
+function localRpcUrl(): string {
+  const rpcUrl = process.env.RPC_URL || 'http://127.0.0.1:8545'
+  const url = new URL(rpcUrl)
+  if (
+    url.protocol !== 'http:' ||
+    !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ||
+    url.username || url.password
+  ) {
+    throw new Error('Local deployment requires an unauthenticated loopback HTTP RPC URL')
+  }
+  return rpcUrl
+}
 
 async function deployContracts() {
-  const rpcUrl = process.env.RPC_URL || 'http://127.0.0.1:8545'
-  const privateKey = (process.env.DEPLOYER_PRIVATE_KEY as Hex) || DEFAULT_LOCAL_KEY
-  const account = privateKeyToAccount(privateKey)
+  const rpcUrl = localRpcUrl()
 
   const publicClient = createPublicClient({
     chain: hardhat,
@@ -23,41 +34,56 @@ async function deployContracts() {
   })
 
   const walletClient = createWalletClient({
-    account,
     chain: hardhat,
     transport: http(rpcUrl),
   })
 
-  console.log(`Deploying from account: ${account.address}`)
+  const chainId = await publicClient.getChainId()
+  if (chainId !== hardhat.id) {
+    throw new Error(`Expected local chain ${hardhat.id}, received ${chainId}`)
+  }
+  const [account] = await walletClient.getAddresses()
+  if (!account) throw new Error('No unlocked local account. Start pnpm dev:chain first.')
 
-  const testUsdArtifact = await loadArtifact('TestUSD', 'TestUSD.sol')
-  const daoArtifact = await loadArtifact('DAO', 'DAO.sol')
+  console.log(`Deploying from local account / TestUSD administrator: ${account}`)
+
+  const testUsdArtifact = await loadArtifact('TestUSD')
+  const daoArtifact = await loadArtifact('DAO')
 
   // Deploy TestUSD
   console.log('Deploying TestUSD...')
   const testUsdHash = await walletClient.deployContract({
+    account,
     abi: testUsdArtifact.abi,
     bytecode: testUsdArtifact.bytecode,
-    args: [account.address],
+    args: [account],
   })
   const testUsdReceipt = await publicClient.waitForTransactionReceipt({ hash: testUsdHash })
-  const testUsdAddress = testUsdReceipt.contractAddress!
+  if (testUsdReceipt.status !== 'success' || !testUsdReceipt.contractAddress) {
+    throw new Error('TestUSD deployment failed; configuration was not updated')
+  }
+  const testUsdAddress = testUsdReceipt.contractAddress
   console.log(`TestUSD deployed at: ${testUsdAddress}`)
 
   // Deploy DAO
   console.log('Deploying DAO...')
   const daoHash = await walletClient.deployContract({
+    account,
     abi: daoArtifact.abi,
     bytecode: daoArtifact.bytecode,
     args: [testUsdAddress],
   })
   const daoReceipt = await publicClient.waitForTransactionReceipt({ hash: daoHash })
-  const daoAddress = daoReceipt.contractAddress!
+  if (daoReceipt.status !== 'success' || !daoReceipt.contractAddress) {
+    throw new Error('DAO deployment failed; configuration was not updated')
+  }
+  const daoAddress = daoReceipt.contractAddress
   console.log(`DAO deployed at: ${daoAddress}`)
 
   // Update public manifest
   const rawManifest = await readFile(manifestPath, 'utf8')
   const manifest = JSON.parse(rawManifest)
+  manifest.chainId = chainId
   manifest.daoAddress = daoAddress
   manifest.testUsdAddress = testUsdAddress
   manifest.artifacts = {

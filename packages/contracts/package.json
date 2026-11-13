@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "hardhat node --hostname 127.0.0.1",
     "build": "hardhat build",
+    "deploy:local": "pnpm build && tsx scripts/deploy/deploy.ts && pnpm artifacts:export",
     "test": "tsx --test test/*.ts",
     "typecheck": "tsc --noEmit",
     "artifacts:export": "tsx scripts/export-public-artifacts.ts"
