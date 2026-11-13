@@ -1,4 +1,4 @@
-import { createPublicClient, erc20Abi, http, parseAbi, type Abi, type Hash, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
+import { createPublicClient, erc20Abi, getAbiItem, http, parseAbi, type Abi, type Hash, type Hex, type PublicClient, type TransactionReceipt } from 'viem'
 import type { Address } from './wallet.js'
 import type { ContractReadRequest } from './treasury.js'
 import type { TestUsdTransactionReceipt } from './testusd.js'
@@ -85,6 +85,25 @@ export interface RpcAdapter {
    * status, block, and logs. Optional for read-only transport stubs.
    */
   waitForTransactionReceipt?(hash: Hex): Promise<TestUsdTransactionReceipt>
+  /**
+   * Queries historical event logs directly (no backend indexer). Optional so
+   * simple chain-status adapters remain valid; public ballot inspection
+   * reports an unconfigured/unavailable state when no log reader exists.
+   */
+  getLogs?(request: LogsReadRequest): Promise<DecodedEventLog[]>
+}
+
+export interface LogsReadRequest {
+  address: Address
+  abi: Abi
+  eventName: string
+  args?: Record<string, unknown>
+  fromBlock?: bigint
+  toBlock?: bigint | 'latest'
+}
+
+export interface DecodedEventLog {
+  args: Record<string, unknown>
 }
 
 export interface FundingContractOperations {
@@ -102,10 +121,21 @@ async function withRpcError<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 /** Wrap the transport client once; callers receive only the operations funding needs. */
-export function createRpcAdapter(client: Pick<PublicClient, 'getChainId' | 'getBlockNumber' | 'readContract' | 'waitForTransactionReceipt'>): RpcAdapter {
+export function createRpcAdapter(client: Pick<PublicClient, 'getChainId' | 'getBlockNumber' | 'readContract' | 'waitForTransactionReceipt' | 'getLogs'>): RpcAdapter {
   return {
     getChainId: () => withRpcError(() => client.getChainId()),
     getBlockNumber: () => withRpcError(() => client.getBlockNumber()),
+    getLogs: (request: LogsReadRequest) => withRpcError(async () => {
+      const eventItem = getAbiItem({ abi: request.abi, name: request.eventName })
+      const logs = await client.getLogs({
+        address: request.address,
+        event: eventItem,
+        args: request.args,
+        fromBlock: request.fromBlock ?? 0n,
+        toBlock: request.toBlock ?? 'latest',
+      } as Parameters<PublicClient['getLogs']>[0])
+      return logs.map(log => ({ args: (log as unknown as { args: Record<string, unknown> }).args }))
+    }),
     waitForTransactionReceipt: hash => withRpcError(async () => {
       const receipt = await client.waitForTransactionReceipt({ hash })
       return {

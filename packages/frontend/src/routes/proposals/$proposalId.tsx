@@ -5,6 +5,7 @@ import { app } from '../../applicationInstance'
 import { ReadFailure } from './-ReadFailure'
 import { AttendanceScanPanel } from './-attendance'
 import { ProposalVotingPanel } from './-vote'
+import { PublicBallotList } from './-ballots'
 
 export const Route = createFileRoute('/proposals/$proposalId')({ component: ProposalDetailPage })
 
@@ -41,6 +42,9 @@ function ProposalDetailPage() {
       <Body state={state} proposalId={proposalId} onRetry={() => void load()} />
       {parseId(proposalId) !== null && (
         <ProposalVotingPanel key={proposalId} id={parseId(proposalId)!} />
+      )}
+      {parseId(proposalId) !== null && (
+        <PublicBallotList key={`ballots-${proposalId}`} id={parseId(proposalId)!} />
       )}
       {parseId(proposalId) !== null && (
         <AttendanceScanPanel key={`attendance-${proposalId}`} id={parseId(proposalId)!} />

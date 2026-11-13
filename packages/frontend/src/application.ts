@@ -4,6 +4,7 @@ import {
   checkProposalPassing, PassingCheckSubmissionError, PassingCheckRevertedError, PassingCheckConfirmationError,
   type VotingProgress,
 } from './voting.js'
+import { readPublicBallots, type Ballot, type BallotLogsChain } from './ballots.js'
 import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
@@ -845,6 +846,17 @@ export type VotingReadResult =
   | { status: 'not-found'; id: bigint }
   | TreasuryReadFailure
 
+/**
+ * Public ballot listing: identities, token IDs, and choices only. Deliberately
+ * disjoint from funding (`FundingBalances`/`FundingState`) and attendance
+ * (`AttendanceCredentialResult`/`AttendanceCollection`) shapes so a viewer of
+ * this read can never infer payment or attendance status from it.
+ */
+export type BallotListResult =
+  | { status: 'success'; chainId: number; ballots: Ballot[] }
+  | { status: 'not-found'; id: bigint }
+  | TreasuryReadFailure
+
 export type VoteResult =
   | { status: 'confirmed'; hash: Hex; progress: VotingProgress | null }
   | { status: 'invalid-input'; message: string }
@@ -1026,6 +1038,12 @@ export function createApplication(
               throw new RpcUnavailableError('Transaction confirmation is not available.')
             }
             return rpc!.waitForTransactionReceipt(hash)
+          },
+          getLogs: (request: Parameters<NonNullable<RpcAdapter['getLogs']>>[0]) => {
+            if (!rpc!.getLogs) {
+              throw new RpcUnavailableError('Event log queries are not available.')
+            }
+            return rpc!.getLogs(request)
           },
         }
       : null
@@ -1267,6 +1285,24 @@ export function createApplication(
       try {
         const progress = await readVotingProgress(proposalChain, proposalConfig, proposalId)
         return progress ? { status: 'success', progress } : { status: 'not-found', id: proposalId }
+      } catch (error) { return toProposalReadFailure(error) }
+    },
+
+    /**
+     * Wallet-free public ballot inspection: rebuilds every cast ballot for a
+     * proposal from `YesVoteCast`/`NoVoteCast` logs (no backend indexer).
+     * Historical ballots tied to since-burned tokens remain in the listing,
+     * because the log record is append-only and independent of current
+     * ownership. Reuses `readVoting`'s totals/threshold/outcome rather than
+     * re-deriving them from these logs.
+     */
+    async readBallots(proposalId: bigint): Promise<BallotListResult> {
+      if (!proposalChain || !proposalConfig || !proposalChain.getLogs) return { status: 'unconfigured', message: 'Ballot inspection requires a configured DAO and RPC endpoint.' }
+      try {
+        const terms = await readProposalTerms(proposalChain, proposalConfig, proposalId)
+        if (terms === null) return { status: 'not-found', id: proposalId }
+        const ballots = await readPublicBallots(proposalChain as ProposalChain & BallotLogsChain, proposalConfig, proposalId)
+        return { status: 'success', chainId: proposalConfig.chainId, ballots }
       } catch (error) { return toProposalReadFailure(error) }
     },
 
