@@ -96,6 +96,19 @@ function makeMembershipHarness(overrides: Partial<MembershipStubState> = {}) {
       if (state.outcome === 'revert') return { status: 'reverted' as const, blockNumber: 123n, logs: [] }
 
       const treasury = normalizeKey(last.to)
+      if (last.functionName === 'burnVotingNft') {
+        const tokenId = last.args[0] as bigint
+        const members = state.memberships[treasury] ?? {}
+        const entry = Object.entries(members).find(([, ids]) => ids.includes(tokenId))
+        if (!entry) return { status: 'reverted' as const, blockNumber: 123n, logs: [] }
+        const [holder, ids] = entry
+        members[holder] = ids.filter(id => id !== tokenId)
+        return { status: 'success' as const, blockNumber: 123n, logs: [{
+          address: getAddress(last.to), data: '0x', topics: [TRANSFER_TOPIC,
+            `0x${holder.slice(2).padStart(64, '0')}`,
+            `0x${'0'.repeat(64)}`, `0x${tokenId.toString(16).padStart(64, '0')}`],
+        }] }
+      }
       const holder = getAddress(last.args[0] as string)
       const members = (state.memberships[treasury] ??= {})
       const tokens = (members[normalizeKey(holder)] ??= [])
@@ -139,6 +152,57 @@ function makeMembershipHarness(overrides: Partial<MembershipStubState> = {}) {
 
   return { state, rpc, adapter }
 }
+
+test('burn confirms removal, updated supply, and repeat-burn failure through application functions', async () => {
+  const { rpc, adapter } = makeMembershipHarness({
+    memberships: { [normalizeKey(TREASURY_A)]: { [normalizeKey(HOLDER)]: [1n, 2n] } },
+  })
+  const app = createApplication(adapter, rpc, DEPLOYMENT)
+  await app.connect()
+  const result = await app.burnVotingNft({ treasury: TREASURY_A, tokenId: '1' })
+  expect(result).toMatchObject({ status: 'success', tokenId: 1n, holder: getAddress(HOLDER),
+    totalSupply: 1n, holderBalance: 1n, holderTokenIds: [2n] })
+  expect(await app.burnVotingNft({ treasury: TREASURY_A, tokenId: '1' }))
+    .toMatchObject({ status: 'transaction-failed', stage: 'reverted' })
+  app.destroy()
+})
+
+test.each(['reject', 'submit-error', 'revert', 'confirmation-error'] as const)(
+  'burn distinguishes %s without reporting removal', async (outcome) => {
+    const { rpc, adapter } = makeMembershipHarness({ outcome })
+    const app = createApplication(adapter, rpc, DEPLOYMENT)
+    await app.connect()
+    const result = await app.burnVotingNft({ treasury: TREASURY_A, tokenId: '1' })
+    expect(result).toMatchObject(outcome === 'reject' ? { status: 'wallet-rejected' } : {
+      status: 'transaction-failed', stage: outcome === 'submit-error' ? 'submission' : outcome === 'revert' ? 'reverted' : 'confirmation',
+    })
+    app.destroy()
+  }
+)
+
+test('a successful receipt without a matching burn event is not confirmed removal', async () => {
+  const { rpc, adapter } = makeMembershipHarness()
+  rpc.waitForTransactionReceipt = async () => ({ status: 'success', blockNumber: 123n, logs: [] })
+  const app = createApplication(adapter, rpc, DEPLOYMENT)
+  await app.connect()
+  expect(await app.burnVotingNft({ treasury: TREASURY_A, tokenId: '1' }))
+    .toMatchObject({ status: 'transaction-failed', stage: 'confirmation', hash: MINT_HASH })
+  app.destroy()
+})
+
+test('burn validates scoped identity and administrator before submission', async () => {
+  const { state, rpc, adapter } = makeMembershipHarness()
+  const app = createApplication(adapter, rpc, DEPLOYMENT)
+  await app.connect()
+  for (const tokenId of ['0', '-1', '1.5', 'abc', (2n ** 256n).toString()]) {
+    expect((await app.burnVotingNft({ treasury: TREASURY_A, tokenId })).status).toBe('invalid-token')
+  }
+  expect((await app.burnVotingNft({ treasury: TREASURY_B, tokenId: '1' })).status).toBe('not-found')
+  state.treasuries[normalizeKey(TREASURY_A)] = getAddress(ADMIN_B)
+  expect((await app.burnVotingNft({ treasury: TREASURY_A, tokenId: '1' })).status).toBe('unauthorized')
+  expect(state.sent).toEqual([])
+  app.destroy()
+})
 
 test('a wallet-free holder inspects live supply and confirmed credential ownership', async () => {
   const { rpc } = makeMembershipHarness({

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { isAddress } from 'viem'
-import type { Application, MintVotingNftResult, VotingMembershipResult } from '../../application'
+import type { Application, BurnVotingNftResult, MintVotingNftResult, VotingMembershipResult } from '../../application'
 
 type MembershipState = VotingMembershipResult | 'loading'
 
@@ -11,6 +11,8 @@ type MembershipState = VotingMembershipResult | 'loading'
 export function MembershipPanel({ app, treasuryAddress }: { app: Application; treasuryAddress: string }) {
   const [state, setState] = useState<MembershipState>('loading')
   const [holder, setHolder] = useState('')
+  const [tokenId, setTokenId] = useState('')
+  const [burnResult, setBurnResult] = useState<BurnVotingNftResult | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState<MintVotingNftResult | null>(null)
   const [wallet, setWallet] = useState(app.readWalletAccount())
@@ -139,6 +141,40 @@ export function MembershipPanel({ app, treasuryAddress }: { app: Application; tr
         </form>
       )}
 
+      {isAdministrator && (
+        <form className="mt-6 border-t pt-6" onSubmit={async (event) => {
+          event.preventDefault()
+          if (submitting) return
+          setSubmitting(true)
+          setBurnResult(null)
+          try {
+            const outcome = await app.burnVotingNft({ treasury: treasuryAddress, tokenId: tokenId.trim() })
+            setBurnResult(outcome)
+            if (outcome.status === 'success') await load()
+          } finally { setSubmitting(false) }
+        }}>
+          <h3 className="font-semibold">Remove a voting credential</h3>
+          <p className="text-sm">IDs are scoped to this treasury. Removal changes live supply, not historical ballots.</p>
+          <label htmlFor="burn-token-id" className="mt-3 block">Token ID in this treasury</label>
+          <input id="burn-token-id" value={tokenId} onChange={(event) => setTokenId(event.target.value)}
+            inputMode="numeric" className="rounded border p-2" />
+          <button disabled={submitting || !/^[1-9]\d*$/.test(tokenId.trim())}
+            className="ml-3 rounded bg-red-700 p-2 text-white disabled:bg-slate-300">
+            {submitting ? 'Waiting for confirmation…' : 'Burn voting NFT'}
+          </button>
+        </form>
+      )}
+      {burnResult && (
+        <div role={burnResult.status === 'success' ? 'status' : 'alert'} className="mt-4 rounded border p-4">
+          {burnResult.status === 'success'
+            ? `Credential #${burnResult.tokenId} removed from ${burnResult.holder}. Live supply: ${burnResult.totalSupply}. Transaction: ${burnResult.hash}`
+            : burnResult.status === 'transaction-failed'
+              ? `Burn failed (${burnResult.stage}): ${burnResult.message} ${burnResult.hash ?? ''}`
+              : burnResult.status === 'wallet-rejected'
+                ? 'Wallet rejected the burn. No transaction was submitted.'
+                : 'message' in burnResult ? burnResult.message : `Burn not submitted: ${burnResult.status}`}
+        </div>
+      )}
       {result && <MintVotingNftResultPanel result={result} />}
     </section>
   )

@@ -4,7 +4,7 @@ import { decodeEventLog, getAddress, isAddress, type Abi, type Address, type Hex
 // Chain seam
 // ---------------------------------------------------------------------------
 //
-// Voting NFT membership reads run through a public RPC seam; minting signs
+// Voting NFT membership reads run through a public RPC seam; mutations sign
 // through the connected wallet. Keeping the seam small lets the same action
 // run against a real local EVM in behavioral tests.
 
@@ -39,7 +39,7 @@ export interface MembershipChain {
 }
 
 export interface MembershipConfig {
-  /** Deployment identity; reads and mints reject any other chain. */
+  /** Deployment identity; reads and mutations reject any other chain. */
   chainId: number
   daoAddress: Address
   daoAbi: Abi
@@ -64,6 +64,92 @@ export class VotingNftMintRevertedError extends Error {
   constructor(readonly hash: Hex) {
     super('The mint transaction was confirmed but reverted on-chain. No voting NFT was minted.')
     this.name = 'VotingNftMintRevertedError'
+  }
+}
+
+export class VotingNftBurnRevertedError extends Error {
+  readonly kind = 'voting-nft-burn-reverted' as const
+  constructor(readonly hash: Hex) {
+    super('The burn transaction reverted. No credential was removed.')
+    this.name = 'VotingNftBurnRevertedError'
+  }
+}
+
+export interface BurnVotingNftInput {
+  from: Address
+  treasury: string
+  tokenId: string
+  assertValid?: () => void
+}
+
+export type BurnVotingNftOutcome =
+  | { status: 'invalid-token'; message: string }
+  | Extract<MintVotingNftOutcome, { status: 'unknown-treasury' | 'unauthorized' | 'success' }>
+
+/** Token identity is always the pair (treasury, tokenId), never a global ID. */
+export async function burnVotingNft(
+  chain: MembershipChain,
+  config: MembershipConfig,
+  input: BurnVotingNftInput
+): Promise<BurnVotingNftOutcome> {
+  if (!/^[1-9]\d*$/.test(input.tokenId) || BigInt(input.tokenId) >= 2n ** 256n) {
+    return { status: 'invalid-token', message: 'Enter a positive uint256 token ID in this treasury.' }
+  }
+  if (!isAddress(input.treasury)) return { status: 'unknown-treasury', treasury: input.treasury }
+  const treasury = getAddress(input.treasury)
+  const tokenId = BigInt(input.tokenId)
+  await assertDeploymentChain(chain, config)
+  if (!(await isRegisteredTreasury(chain, config, treasury))) {
+    return { status: 'unknown-treasury', treasury: input.treasury }
+  }
+  const administrator = getAddress(await chain.readContract<Address>({
+    address: treasury, abi: config.treasuryAbi, functionName: 'administrator',
+  }))
+  const account = getAddress(input.from)
+  if (account !== administrator) return {
+    status: 'unauthorized', account, administrator,
+    message: 'Only this treasury’s administrator can burn its voting NFTs.',
+  }
+  input.assertValid?.()
+  let hash: Hex
+  try {
+    hash = await chain.sendTransaction({
+      from: account, address: treasury, abi: config.treasuryAbi,
+      functionName: 'burnVotingNft', args: [tokenId],
+    })
+  } catch (error) {
+    throw new VotingNftSubmissionError('The burn transaction was not submitted.', error)
+  }
+  let receipt: MembershipTransactionReceipt
+  try {
+    receipt = await chain.waitForTransactionReceipt(hash)
+  } catch {
+    throw new VotingNftConfirmationError('The burn was submitted but could not be confirmed.', hash)
+  }
+  if (receipt.status !== 'success') throw new VotingNftBurnRevertedError(hash)
+  let holder: Address | undefined
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== treasury.toLowerCase()) continue
+    try {
+      const decoded = decodeEventLog({ abi: config.treasuryAbi, eventName: 'Transfer',
+        data: log.data, topics: log.topics as [Hex, ...Hex[]] })
+      const args = decoded.args as unknown as { from: Address; to: Address; tokenId: bigint }
+      if (args.to.toLowerCase() === ZERO_ADDRESS && args.tokenId === tokenId && args.from.toLowerCase() !== ZERO_ADDRESS) {
+        holder = getAddress(args.from)
+      }
+    } catch { /* Ignore unrelated events. */ }
+  }
+  if (!holder) throw new VotingNftConfirmationError('No matching credential removal event was found.', hash)
+  try {
+    const membership = await readVotingMembership(chain, config, treasury, holder)
+    if (!membership?.holder || membership.holder.tokenIds.includes(tokenId)) {
+      throw new Error('Removed credential is still active or membership is unavailable.')
+    }
+    return { status: 'success', chainId: config.chainId, hash, blockNumber: receipt.blockNumber,
+      treasury, tokenId, holder, totalSupply: membership.totalSupply,
+      holderBalance: membership.holder.balance, holderTokenIds: membership.holder.tokenIds }
+  } catch (error) {
+    throw new VotingNftConfirmationError(`Burn confirmed, but membership could not be verified: ${String(error)}`, hash)
   }
 }
 

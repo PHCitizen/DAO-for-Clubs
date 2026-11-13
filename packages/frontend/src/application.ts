@@ -41,6 +41,9 @@ import {
   type MembershipConfig,
   type VotingMembership,
   mintVotingNft,
+  burnVotingNft,
+  type BurnVotingNftOutcome,
+  VotingNftBurnRevertedError,
   readVotingMembership,
   MembershipChainMismatchError,
   VotingNftConfirmationError,
@@ -325,6 +328,12 @@ export interface MintVotingNftRequest {
   holder: string
 }
 
+export type BurnVotingNftResult =
+  | Exclude<BurnVotingNftOutcome, { status: 'unknown-treasury' }>
+  | { status: 'not-found'; address: string; reason: 'invalid-address' | 'unregistered' }
+  | MintVotingNftFailure
+  | TreasuryReadFailure
+
 // ---------------------------------------------------------------------------
 // Shared chain error mapping
 // ---------------------------------------------------------------------------
@@ -374,6 +383,8 @@ interface MintErrorTaxonomy {
 interface MintFailureCopy {
   revertedMessage: string
   rpcUnavailableMessage: string
+  rejectedMessage?: string
+  submissionMessage?: string
 }
 
 /**
@@ -422,13 +433,13 @@ function toMintFailure(
     if (rejected) {
       return {
         status: 'wallet-rejected',
-        message: 'The mint transaction was rejected in your wallet. Nothing was submitted.',
+        message: copy.rejectedMessage ?? 'The mint transaction was rejected in your wallet. Nothing was submitted.',
       }
     }
     return {
       status: 'transaction-failed',
       stage: 'submission',
-      message: 'The mint transaction was not submitted.',
+      message: copy.submissionMessage ?? 'The mint transaction was not submitted.',
       error: error.message,
     }
   }
@@ -1185,6 +1196,44 @@ export function createApplication(
         return outcome
       } catch (err) {
         return toMintVotingNftFailure(err)
+      }
+    },
+
+    async burnVotingNft(request: { treasury: string; tokenId: string }): Promise<BurnVotingNftResult> {
+      if (!membershipChain || !membershipConfig) return {
+        status: 'unconfigured', message: 'Burning requires a configured DAO deployment and RPC endpoint.',
+      }
+      if (!isAddress(request.treasury)) return {
+        status: 'not-found', address: request.treasury, reason: 'invalid-address',
+      }
+      if (!adapter) return { status: 'wallet-unavailable', message: 'Connect a wallet to burn a credential.' }
+      let prepared
+      try {
+        prepared = await this.prepareDeploymentAction({ target: request.treasury })
+      } catch (error) {
+        return toPreparedActionFailure(error)
+      }
+      try {
+        prepared.assertValid()
+        const outcome = await burnVotingNft(membershipChain, membershipConfig, {
+          ...request, from: prepared.context.account, assertValid: prepared.assertValid,
+        })
+        if (outcome.status === 'unknown-treasury') return {
+          status: 'not-found', address: outcome.treasury, reason: 'unregistered',
+        }
+        return outcome
+      } catch (error) {
+        return toMintFailure(error, {
+          ChainMismatchError: MembershipChainMismatchError,
+          MintRevertedError: VotingNftBurnRevertedError,
+          ConfirmationError: VotingNftConfirmationError,
+          SubmissionError: VotingNftSubmissionError,
+        }, {
+          revertedMessage: 'The burn reverted on-chain. No credential was removed.',
+          rpcUnavailableMessage: 'Burning could not reach the configured RPC endpoint.',
+          rejectedMessage: 'The burn transaction was rejected in your wallet. Nothing was submitted.',
+          submissionMessage: 'The burn transaction was not submitted.',
+        })
       }
     },
 
