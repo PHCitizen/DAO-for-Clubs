@@ -102,7 +102,7 @@ export function createAttendanceCollection(event: AttendanceEvent, store: Attend
   const loaded = store.load()
   const entries: Hex[] = [...loaded.entries]
   const seen = new Set<Hex>(entries)
-  let storage = loaded.state
+  let storageState = loaded.state
   const reject = (reason: ScanRejectionReason): ScanResult => ({
     status: 'rejected',
     reason,
@@ -120,10 +120,10 @@ export function createAttendanceCollection(event: AttendanceEvent, store: Attend
       if (seen.has(parsed.entry)) return { status: 'duplicate', count: entries.length }
       seen.add(parsed.entry)
       entries.push(parsed.entry)
-      storage = store.save(entries)
-      return { status: 'accepted', count: entries.length, saved: storage.status === 'saved' }
+      storageState = store.save(entries)
+      return { status: 'accepted', count: entries.length, saved: storageState.status === 'saved' }
     },
-    read: () => ({ event: { ...event }, count: entries.length, entries: [...entries], storage }),
+    read: () => ({ event: { ...event }, count: entries.length, entries: [...entries], storage: storageState }),
   }
 }
 

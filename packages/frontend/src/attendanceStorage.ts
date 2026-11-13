@@ -13,15 +13,16 @@ export interface AttendanceStorage {
   setItem(key: string, value: string): void
 }
 
-export type AttendanceStorageStatus = 'saved' | 'save-failed' | 'unavailable' | 'corrupt'
+export type AttendanceStorageStatus = 'empty' | 'saved' | 'save-failed' | 'unavailable' | 'corrupt'
 
-/** Honest persistence state: 'saved' means every counted entry is in storage. */
+/** Honest persistence state: 'saved' means an entry was written or restored; 'empty' means nothing is saved yet. */
 export interface AttendanceStorageState {
   status: AttendanceStorageStatus
   message: string
 }
 
 export const STORAGE_MESSAGES: Record<AttendanceStorageStatus, string> = {
+  empty: 'Nothing saved in this browser yet.',
   saved: 'Saved in this browser.',
   'save-failed': 'Could not save to this browser. Entries are counted for now but will be lost on reload.',
   unavailable: 'Browser storage is unavailable. Entries are counted for now but will be lost on reload.',
@@ -39,7 +40,7 @@ const SCHEMA = 1
 const KEY_PREFIX = 'dao-for-clubs:attendance:v1:'
 const ENTRY_PATTERN = /^0x[0-9a-f]{64}$/
 
-const state = (status: AttendanceStorageStatus): AttendanceStorageState => ({ status, message: STORAGE_MESSAGES[status] })
+const storageState = (status: AttendanceStorageStatus): AttendanceStorageState => ({ status, message: STORAGE_MESSAGES[status] })
 
 function parseSaved(raw: string, event: AttendanceEvent): Hex[] | null {
   let value: unknown
@@ -54,28 +55,27 @@ function parseSaved(raw: string, event: AttendanceEvent): Hex[] | null {
     !Array.isArray(entries) ||
     !entries.every(entry => typeof entry === 'string' && ENTRY_PATTERN.test(entry))
   ) return null
-  // Dedupe defensively so a tampered list can never inflate the count.
-  return [...new Set(entries as Hex[])]
+  // Duplicates mean the saved list was tampered with or damaged: do not hide it.
+  if (new Set(entries).size !== entries.length) return null
+  return entries as Hex[]
 }
 
 /** A store scoped to one chain ID, DAO address, and proposal ID. Without storage nothing persists. */
 export function createAttendanceStore(storage: AttendanceStorage | undefined, event: AttendanceEvent): AttendanceStore {
   const key = KEY_PREFIX + attendanceEventKey(event)
-  let available = storage !== undefined
+  const empty = (status: AttendanceStorageStatus) => ({ entries: [] as Hex[], state: storageState(status) })
   return {
     load() {
-      if (!storage) return { entries: [], state: state('unavailable') }
+      if (!storage) return empty('unavailable')
       let raw: string | null
-      try { raw = storage.getItem(key) } catch {
-        available = false
-        return { entries: [], state: state('unavailable') }
-      }
-      if (raw === null) return { entries: [], state: state('saved') }
+      try { raw = storage.getItem(key) } catch { return empty('unavailable') }
+      if (raw === null) return empty('empty')
       const entries = parseSaved(raw, event)
-      return entries === null ? { entries: [], state: state('corrupt') } : { entries, state: state('saved') }
+      if (entries === null) return empty('corrupt')
+      return { entries, state: storageState(entries.length === 0 ? 'empty' : 'saved') }
     },
     save(entries) {
-      if (!storage || !available) return state('unavailable')
+      if (!storage) return storageState('unavailable')
       try {
         storage.setItem(key, JSON.stringify({
           schema: SCHEMA,
@@ -85,9 +85,9 @@ export function createAttendanceStore(storage: AttendanceStorage | undefined, ev
           entries,
         }))
       } catch {
-        return state('save-failed')
+        return storageState('save-failed')
       }
-      return state('saved')
+      return storageState('saved')
     },
   }
 }
