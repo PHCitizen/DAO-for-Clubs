@@ -28,7 +28,7 @@ const log = (eventName: Event, proposalId = 1n) => ({
 })
 
 /** `chain` drives what the read side reports for the proposal. */
-function fixture(chain: { passed: boolean; paid: boolean } = { passed: true, paid: false }) {
+function fixture(chain: { passed: boolean; paid: boolean; paymentFailed?: boolean; balance?: bigint } = { passed: true, paid: false }) {
   const wallet: WalletAdapter = {
     isAvailable: () => true, connect: async () => CREATOR, disconnect: async () => {},
     getAccount: async () => CREATOR, getChainId: vi.fn(async () => 31337),
@@ -44,6 +44,8 @@ function fixture(chain: { passed: boolean; paid: boolean } = { passed: true, pai
         case 'getProposal': return { id: 1n, treasury: DAO, creator: CREATOR, amount: AMOUNT, payoutRecipient: CREATOR, votingDeadline: 9n, documentReference: 'ipfs://x' }
         case 'getVoting': return [1n, 1n, chain.passed, false, 0n]
         case 'fundsReleased': return chain.paid
+        case 'paymentFailed': return chain.paymentFailed ?? false
+        case 'balanceOf': return chain.balance ?? 0n
         default: throw new Error(`unexpected read ${request.functionName}`)
       }
     }) as never,
@@ -56,7 +58,9 @@ function fixture(chain: { passed: boolean; paid: boolean } = { passed: true, pai
 test('readFunding returns display-ready text and whether release is offered, per funding state', async () => {
   const states = [
     [{ passed: false, paid: false }, 'not-passed', 'Not passed: no funds can be released.', false],
-    [{ passed: true, paid: false }, 'passed-awaiting-funds', 'Passed; not yet paid.', true],
+    [{ passed: true, paid: false, balance: AMOUNT - 1n }, 'passed-awaiting-funds', 'Passed; awaiting funds: the treasury balance is below the amount. Retry after it is replenished.', true],
+    [{ passed: true, paid: false, balance: AMOUNT }, 'payment-pending', 'Passed; the treasury can currently cover the amount, but it is not yet paid. Passing does not reserve funds.', true],
+    [{ passed: true, paid: false, balance: AMOUNT, paymentFailed: true }, 'payment-failed', 'Passed; the last payment attempt failed because the funding asset refused the transfer. Retry is possible.', true],
     [{ passed: true, paid: true }, 'paid', 'Paid: funds were sent to the fixed recipient.', false],
   ] as const
   for (const [chain, state, statusText, canRelease] of states) {

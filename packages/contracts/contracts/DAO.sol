@@ -68,6 +68,8 @@ contract DAO {
 
     /// True once a proposal's fixed allocation has actually been paid; set exactly once.
     mapping(uint256 => bool) public fundsReleased;
+    /// True while the latest release attempt had sufficient balance but the asset refused the transfer; cleared by a successful payment.
+    mapping(uint256 => bool) public paymentFailed;
     bool private _releasing;
 
     /// Emitted only when TestUSD actually moved to the proposal's fixed recipient.
@@ -273,11 +275,13 @@ contract DAO {
         _releasing = true;
         fundsReleased[proposalId] = true;
         try Treasury(proposal.treasury).releaseFunds(proposal.payoutRecipient, proposal.amount) {
+            paymentFailed[proposalId] = false;
             emit FundsReleased(proposalId, proposal.treasury, proposal.payoutRecipient, proposal.amount);
             paid = true;
         } catch {
             // The asset refused the transfer: undo, so a failed transfer is never paid state.
             fundsReleased[proposalId] = false;
+            paymentFailed[proposalId] = true;
             emit FundsTransferFailed(proposalId, proposal.treasury, proposal.amount);
         }
         _releasing = false;
