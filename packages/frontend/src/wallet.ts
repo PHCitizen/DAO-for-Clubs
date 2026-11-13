@@ -1,5 +1,5 @@
 import { encodeFunctionData, type Abi, type Hex } from 'viem'
-import { getSupportedChain } from './networks'
+import { getSupportedChain } from './networks.js'
 
 /**
  * WalletAdapter is the external seam between the application and the browser

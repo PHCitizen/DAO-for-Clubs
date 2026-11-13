@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import type { NetworkState, PublicDeploymentStatus, WalletState } from '../application'
+import { FundingPanel } from './-funding'
 import { app } from '../applicationInstance'
 import { useNetworkState, useWalletState } from '../walletState'
 
@@ -145,6 +146,7 @@ function Home() {
           />
         </div>
       </section>
+      <FundingPanel app={app} />
     </main>
   )
 }
