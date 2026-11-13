@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import type { ProposalPinState } from '../../application'
 import { app } from '../../applicationInstance'
+import { ProposalCreationPanel } from './-create'
 
 export const Route = createFileRoute('/proposals/new')({ component: ProposalEditorPage })
 
@@ -185,6 +186,8 @@ function ProposalEditorPage() {
           onTokenChange={setToken}
           onPin={handlePin}
         />
+
+        <ProposalCreationPanel app={app} />
       </main>
     </div>
   )

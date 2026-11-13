@@ -1,5 +1,5 @@
 import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
-import { decodeEventLog, erc20Abi, isAddress, parseUnits, type Hash, type Hex } from 'viem'
+import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
   type Address,
@@ -75,6 +75,18 @@ import {
   formatIpfsReference,
   isValidCid,
 } from './ipfs.js'
+import {
+  type ProposalChain,
+  type ProposalConfig,
+  type ProposalTerms,
+  ProposalChainMismatchError,
+  ProposalConfirmationError,
+  ProposalRevertedError,
+  ProposalSubmissionError,
+  createProposalOnChain,
+  readProposalCount,
+  readProposalTerms,
+} from './proposalCreation.js'
 
 // ---------------------------------------------------------------------------
 // Wallet connection and network state
@@ -374,6 +386,14 @@ function toChainReadFailure(
   }
 }
 
+function toProposalReadFailure(error: unknown): TreasuryReadFailure {
+  return toChainReadFailure(
+    error,
+    ProposalChainMismatchError,
+    'Proposal reads could not reach the configured RPC endpoint.'
+  )
+}
+
 /** Per-domain error classes of one transaction action's error taxonomy. */
 interface TransactionErrorTaxonomy {
   ChainMismatchError: ChainMismatchErrorType
@@ -653,6 +673,68 @@ export interface ApplicationOptions {
   ipfs?: IpfsTransport
 }
 
+// ---------------------------------------------------------------------------
+// On-chain proposal creation
+// ---------------------------------------------------------------------------
+
+export interface CreateProposalRequest {
+  treasury: string
+  amount: string
+  /** Unix timestamp in seconds. */
+  votingDeadline: number
+}
+
+export interface ConfirmedProposal {
+  hash: Hex
+  proposal: ProposalTerms
+  formattedAmount: string
+  symbol: string
+}
+
+export type ProposalCreationState =
+  | { status: 'idle' }
+  | { status: 'submitting' }
+  | { status: 'pending'; hash: Hex }
+  | ({ status: 'confirmed' } & ConfirmedProposal)
+  | { status: 'rejected'; message: string; documentReference: string }
+  | { status: 'failed'; message: string; retryable: true; documentReference: string }
+
+export type CreateProposalResult =
+  | ({ status: 'created' } & ConfirmedProposal)
+  | {
+      status:
+        | 'not-pinned'
+        | 'stale-reference'
+        | 'invalid-treasury'
+        | 'unregistered-treasury'
+        | 'invalid-amount'
+        | 'invalid-deadline'
+        | 'invalid-reference'
+        | 'unconfigured'
+        | 'wallet-unavailable'
+        | 'wallet-not-connected'
+        | 'chain-mismatch'
+      message: string
+    }
+  | { status: 'rejected'; message: string }
+  | { status: 'failed'; message: string; retryable: true }
+
+export type ProposalReadResult =
+  | {
+      status: 'success'
+      chainId: number
+      proposal: ProposalTerms
+      formattedAmount: string
+      symbol: string
+      decimals: number
+    }
+  | { status: 'not-found'; id: bigint }
+  | TreasuryReadFailure
+
+export type ProposalCountResult =
+  | { status: 'success'; chainId: number; count: bigint }
+  | TreasuryReadFailure
+
 export function createApplication(
   adapter?: WalletAdapter,
   injectedRpcAdapter?: RpcAdapter,
@@ -747,6 +829,42 @@ export function createApplication(
             })
           },
           waitForTransactionReceipt: async (hash: Hex) => {
+            if (!rpc!.waitForTransactionReceipt) {
+              throw new RpcUnavailableError('Transaction confirmation is not available.')
+            }
+            return rpc!.waitForTransactionReceipt(hash)
+          },
+        }
+      : null
+
+  const proposalConfig: ProposalConfig | null =
+    deploymentContext.daoAddress && deploymentContext.testUsdAddress
+      ? {
+          chainId: deploymentContext.chainId,
+          daoAddress: deploymentContext.daoAddress,
+          testUsdAddress: deploymentContext.testUsdAddress,
+          daoAbi: publicAbis.DAO,
+          testUsdAbi: publicAbis.TestUSD,
+        }
+      : null
+
+  const proposalChain: ProposalChain | null =
+    rpc?.readContract && proposalConfig
+      ? {
+          getChainId: () => rpc!.getChainId(),
+          readContract: <T>(request: Parameters<NonNullable<RpcAdapter['readContract']>>[0]) =>
+            rpc!.readContract!<T>(request),
+          sendTransaction: async (request) => {
+            if (!adapter) throw new WalletUnavailableError()
+            return adapter.sendTransaction({
+              from: request.from,
+              to: request.address,
+              abi: request.abi,
+              functionName: request.functionName,
+              args: request.args,
+            })
+          },
+          waitForTransactionReceipt: (hash: Hex) => {
             if (!rpc!.waitForTransactionReceipt) {
               throw new RpcUnavailableError('Transaction confirmation is not available.')
             }
@@ -852,6 +970,13 @@ export function createApplication(
   function emitProposalPinState() {
     const state = readProposalPinState()
     for (const listener of proposalPinListeners) listener(state)
+  }
+
+  let proposalCreationState: ProposalCreationState = { status: 'idle' }
+  const proposalCreationListeners = new Set<(state: ProposalCreationState) => void>()
+  function emitProposalCreation(state: ProposalCreationState) {
+    proposalCreationState = state
+    for (const listener of proposalCreationListeners) listener(state)
   }
 
   async function fundingBalances(treasury: Address, sender: Address): Promise<FundingBalances> {
@@ -1073,6 +1198,179 @@ export function createApplication(
         }
       }
       return { status: 'pinned', pin }
+    },
+
+    // -----------------------------------------------------------------------
+    // On-chain proposal creation and reads
+    // -----------------------------------------------------------------------
+
+    readProposalCreationState: () => proposalCreationState,
+
+    onProposalCreationStateChanged(listener: (state: ProposalCreationState) => void) {
+      proposalCreationListeners.add(listener)
+      return () => {
+        proposalCreationListeners.delete(listener)
+      }
+    },
+
+    /**
+     * Creates an immutable proposal using the currently pinned document. A
+     * stale reference is never submitted: the draft must be re-pinned first.
+     * A failed transaction leaves the document pinned without a proposal.
+     */
+    async createProposal(request: CreateProposalRequest): Promise<CreateProposalResult> {
+      const pinState = readProposalPinState()
+      if (pinState.status === 'draft-changed') {
+        return {
+          status: 'stale-reference',
+          message:
+            'The draft changed after pinning. Pin the updated document before creating a proposal; the obsolete reference will not be reused.',
+        }
+      }
+      if (pinState.status !== 'pinned') {
+        return {
+          status: 'not-pinned',
+          message: 'Pin the reviewed document before creating a proposal.',
+        }
+      }
+      const documentReference = pinState.pin.reference
+
+      if (!proposalChain || !proposalConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'Proposal creation requires a configured DAO deployment and RPC endpoint.',
+        }
+      }
+      if (!adapter) {
+        return {
+          status: 'wallet-unavailable',
+          message: 'No wallet extension is available to sign the proposal transaction.',
+        }
+      }
+
+      let prepared
+      try {
+        prepared = await this.prepareDeploymentAction({ target: 'dao' })
+      } catch (error) {
+        if (error instanceof WalletNotConnectedError) {
+          return {
+            status: 'wallet-not-connected',
+            message: 'Connect the organizer wallet to create the proposal.',
+          }
+        }
+        if (error instanceof ChainMismatchError) {
+          return {
+            status: 'chain-mismatch',
+            message: `The wallet is on chain ${error.actualChainId}, but this deployment uses chain ${error.expectedChainId}.`,
+          }
+        }
+        return {
+          status: 'unconfigured',
+          message: error instanceof Error ? error.message : String(error),
+        }
+      }
+
+      try {
+        prepared.assertValid()
+        emitProposalCreation({ status: 'submitting' })
+        const outcome = await createProposalOnChain(
+          proposalChain,
+          proposalConfig,
+          {
+            from: prepared.context.account,
+            treasury: request.treasury,
+            amount: request.amount,
+            votingDeadline: request.votingDeadline,
+            documentReference,
+          },
+          { onSubmitted: (hash) => emitProposalCreation({ status: 'pending', hash }) }
+        )
+
+        if (outcome.status !== 'success') {
+          emitProposalCreation({ status: 'idle' })
+          return { status: outcome.status, message: outcome.message }
+        }
+
+        const confirmed: ConfirmedProposal = {
+          hash: outcome.hash,
+          proposal: outcome.proposal,
+          formattedAmount: outcome.formattedAmount,
+          symbol: outcome.symbol,
+        }
+        emitProposalCreation({ status: 'confirmed', ...confirmed })
+        return { status: 'created', ...confirmed }
+      } catch (error) {
+        if (error instanceof ProposalSubmissionError && error.cause instanceof TransactionRejectedError) {
+          const message =
+            'The proposal transaction was rejected in your wallet. The document is still pinned, but no proposal was created.'
+          emitProposalCreation({ status: 'rejected', message, documentReference })
+          return { status: 'rejected', message }
+        }
+
+        const message =
+          error instanceof ProposalRevertedError
+            ? `The proposal transaction reverted on-chain. The document remains pinned at ${documentReference}, but no proposal was created. You can retry.`
+            : error instanceof ProposalConfirmationError
+              ? `The proposal could not be confirmed: ${error.message}. The document remains pinned; review the transaction before retrying.`
+              : error instanceof ProposalChainMismatchError
+                ? `The wallet or RPC is on the wrong chain (expected ${error.expectedChainId}, got ${error.actualChainId}).`
+                : `Proposal creation failed: ${error instanceof Error ? error.message : String(error)}. The document remains pinned; no proposal was recorded.`
+
+        emitProposalCreation({ status: 'failed', message, retryable: true, documentReference })
+        return { status: 'failed', message, retryable: true }
+      }
+    },
+
+    /** Reads the immutable identity and terms used by voting/payouts/attendance. */
+    async readProposal(id: bigint): Promise<ProposalReadResult> {
+      if (!proposalChain || !proposalConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'Proposal reads require a configured DAO deployment and RPC endpoint.',
+        }
+      }
+      try {
+        const proposal = await readProposalTerms(proposalChain, proposalConfig, id)
+        if (proposal === null) return { status: 'not-found', id }
+        const [decimals, symbol] = await Promise.all([
+          proposalChain.readContract<number>({
+            address: proposalConfig.testUsdAddress,
+            abi: proposalConfig.testUsdAbi,
+            functionName: 'decimals',
+          }),
+          proposalChain.readContract<string>({
+            address: proposalConfig.testUsdAddress,
+            abi: proposalConfig.testUsdAbi,
+            functionName: 'symbol',
+          }),
+        ])
+        const tokenDecimals = Number(decimals)
+        return {
+          status: 'success',
+          chainId: proposalConfig.chainId,
+          proposal,
+          formattedAmount: formatUnits(proposal.amount, tokenDecimals),
+          symbol,
+          decimals: tokenDecimals,
+        }
+      } catch (error) {
+        return toProposalReadFailure(error)
+      }
+    },
+
+    async readProposalCount(): Promise<ProposalCountResult> {
+      if (!proposalChain || !proposalConfig) {
+        return {
+          status: 'unconfigured',
+          message: 'Proposal reads require a configured DAO deployment and RPC endpoint.',
+        }
+      }
+      try {
+        const count = await readProposalCount(proposalChain, proposalConfig)
+        return { status: 'success', chainId: proposalConfig.chainId, count }
+      } catch (error) {
+        return toProposalReadFailure(error)
+      }
     },
 
     readFundingState: () => fundingState,
