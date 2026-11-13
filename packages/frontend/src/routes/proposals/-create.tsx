@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import type { Application } from '../../application'
 import { useNetworkState, useWalletState } from '../../walletState'
 
@@ -210,6 +211,7 @@ function CreationResultPanel({
         <p className="text-sm font-semibold text-status-success">
           Proposal #{proposal.id.toString()} created
         </p>
+        <Link to="/proposals/$proposalId" params={{ proposalId: proposal.id.toString() }} className="text-binance-yellow underline">Open proposal voting</Link>
         <dl className="mt-3 grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">
           <div>
             <dt className="text-xs font-semibold uppercase tracking-wider text-text-secondary">

@@ -164,8 +164,8 @@ test('proposal creation on a real local chain', async (t) => {
     await t.test('exposes immutable terms and rejects unknown proposal IDs', async () => {
       const before = await readProposal(1n)
 
-      // No proposal field can be edited: the only state-changing DAO entry
-      // points are treasury creation and proposal creation.
+      // No proposal terms can be edited. Voting mutates only the separate
+      // result record, not the proposal's immutable terms.
       const mutating = daoArtifact.abi
         .filter(
           (entry) =>
@@ -175,7 +175,7 @@ test('proposal creation on a real local chain', async (t) => {
         )
         .map((entry) => ('name' in entry ? entry.name : ''))
         .sort()
-      assert.deepEqual(mutating, ['createProposal', 'createTreasury'])
+      assert.deepEqual(mutating, ['createProposal', 'createTreasury', 'voteYes'])
 
       const after = await readProposal(1n)
       assert.deepEqual(after, before)

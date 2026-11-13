@@ -10,6 +10,9 @@ error InvalidProposalAmount();
 error InvalidVotingDeadline();
 error InvalidDocumentReference();
 error ProposalNotFound();
+error VotingClosed();
+error BallotAlreadyCast();
+error NotVotingNftHolder();
 
 /**
  * @title DAO
@@ -44,6 +47,17 @@ contract DAO {
     /// DAO-wide proposal sequence; IDs start at 1 and are shared by all treasuries.
     uint256 public proposalCount;
     mapping(uint256 => Proposal) private _proposals;
+
+    struct VotingResult {
+        uint256 yesVotes;
+        bool passingRecorded;
+    }
+
+    mapping(uint256 => VotingResult) private _voting;
+    mapping(uint256 => mapping(uint256 => bool)) public ballotConsumed;
+
+    event YesVoteCast(uint256 indexed proposalId, uint256 indexed tokenId, address indexed voter);
+    event ProposalPassed(uint256 indexed proposalId);
 
     event TreasuryCreated(address indexed treasury, address indexed administrator);
     event ProposalCreated(
@@ -155,5 +169,47 @@ contract DAO {
     function getProposal(uint256 proposalId) external view returns (Proposal memory) {
         if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
         return _proposals[proposalId];
+    }
+
+    /// @notice One immutable ballot per treasury credential per proposal.
+    function voteYes(uint256 proposalId, uint256 tokenId) external {
+        Proposal storage proposal = _requireOpenVote(proposalId);
+        if (ballotConsumed[proposalId][tokenId]) revert BallotAlreadyCast();
+        if (Treasury(proposal.treasury).ownerOf(tokenId) != msg.sender) revert NotVotingNftHolder();
+        ballotConsumed[proposalId][tokenId] = true;
+        _voting[proposalId].yesVotes++;
+        emit YesVoteCast(proposalId, tokenId, msg.sender);
+        _recordPassingIfQualified(proposalId);
+    }
+
+    /// @dev Shared open-vote guard for later ballot and passing-check actions.
+    function _requireOpenVote(uint256 proposalId) internal view returns (Proposal storage proposal) {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
+        proposal = _proposals[proposalId];
+        if (_voting[proposalId].passingRecorded || block.timestamp >= proposal.votingDeadline) revert VotingClosed();
+    }
+
+    /// @dev Call only after the open-vote guard. Passing never touches funds.
+    function _recordPassingIfQualified(uint256 proposalId) internal returns (bool) {
+        VotingResult storage result = _voting[proposalId];
+        if (!result.passingRecorded && result.yesVotes >= _yesThreshold(proposalId)) {
+            result.passingRecorded = true;
+            emit ProposalPassed(proposalId);
+        }
+        return result.passingRecorded;
+    }
+
+    function _yesThreshold(uint256 proposalId) internal view returns (uint256) {
+        return Treasury(_proposals[proposalId].treasury).totalSupply() / 2 + 1;
+    }
+
+    /// @notice Coherent live progress and outcome using chain time, not client time.
+    function getVoting(uint256 proposalId) external view returns (
+        uint256 yesVotes, uint256 threshold, bool passingRecorded, bool open
+    ) {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
+        VotingResult storage result = _voting[proposalId];
+        return (result.yesVotes, _yesThreshold(proposalId), result.passingRecorded,
+            !result.passingRecorded && block.timestamp < _proposals[proposalId].votingDeadline);
     }
 }

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { PublishedProposalResult } from '../../application'
 import { app } from '../../applicationInstance'
 import { ReadFailure } from './-ReadFailure'
+import { ProposalVotingPanel } from './-vote'
 
 export const Route = createFileRoute('/proposals/$proposalId')({ component: ProposalDetailPage })
 
@@ -37,6 +38,9 @@ function ProposalDetailPage() {
         ← Proposals
       </Link>
       <Body state={state} proposalId={proposalId} onRetry={() => void load()} />
+      {parseId(proposalId) !== null && (
+        <ProposalVotingPanel key={proposalId} id={parseId(proposalId)!} />
+      )}
     </main>
   )
 }
