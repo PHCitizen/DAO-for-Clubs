@@ -101,6 +101,29 @@ import {
 } from './attendanceScan.js'
 import { createAttendanceStore, type AttendanceStorage } from './attendanceStorage.js'
 import {
+  attendanceV2Context,
+  attendanceV2SigningMessage,
+  decodeAttendanceV2Dataset,
+  encodeField,
+  prepareAttendanceV2Witness,
+  recoverAttendanceV2Secret,
+  sameAttendanceV2Event,
+  type AttendanceV2Dataset,
+  type AttendanceV2Event,
+  type AttendanceV2Witness,
+} from './attendanceV2.js'
+import {
+  decodePrivatePresentation,
+  encodePrivatePresentation,
+  presentationMatchesRecord,
+  privatePresentationFileName,
+  UnsupportedPresentationError,
+  type AttendanceProofStatement,
+  type AttendanceProofSystem,
+  type FinalizedAttendanceRecord,
+} from './privateAttendance.js'
+import { parseIpfsReference } from './ipfs.js'
+import {
   type IpfsCredentials,
   type IpfsTransport,
   formatIpfsReference,
@@ -753,9 +776,75 @@ export interface ApplicationOptions {
   camera?: CameraScanner
   /** Browser storage that keeps organizer attendance across reloads; omit when unavailable. */
   attendanceStorage?: AttendanceStorage
-  /** IPFS transport used for proposal pinning; omit to disable pinning. */
+  /** IPFS transport used for proposal pinning and attendance-set retrieval; omit to disable both. */
   ipfs?: IpfsTransport
+  /**
+   * Application-trusted private attendance proof system. The browser adapter
+   * owns the pinned transparent prover and verification-key artifacts; imported
+   * proof files can never supply or replace them.
+   */
+  attendanceProof?: AttendanceProofSystem
 }
+
+export interface PreparePrivateAttendanceWitnessRequest {
+  proposalId: bigint
+}
+
+export interface PreparedPrivateAttendanceWitness {
+  readonly event: AttendanceV2Event
+  readonly statement: AttendanceProofStatement
+  /** True while the account and chain used to prepare the witness still match. */
+  isCurrent(): boolean
+  /** Generates a real proof; the witness never leaves this closure. */
+  generate(): Promise<PrivateAttendanceProofResult>
+}
+
+export type PreparePrivateAttendanceWitnessResult =
+  | { status: 'ready'; witness: PreparedPrivateAttendanceWitness }
+  | {
+      status:
+        | 'wallet-unavailable'
+        | 'wallet-not-connected'
+        | 'unconfigured'
+        | 'chain-mismatch'
+        | 'stale-configuration'
+        | 'invalid-proposal-id'
+        | 'not-found'
+        | 'unfinalized'
+        | 'retrieval-failed'
+        | 'invalid-dataset'
+        | 'wallet-rejected'
+        | 'signing-failed'
+        | 'not-attending'
+        | 'prover-unavailable'
+      message: string
+    }
+
+export type PrivateAttendanceProofResult =
+  | { status: 'ready'; fileName: string; file: string; count: number }
+  | {
+      status: 'not-attending' | 'prover-unavailable' | 'proving-failed' | 'stale-witness'
+      message: string
+    }
+
+export type VerifyPrivateAttendanceResult =
+  | {
+      status: 'valid'
+      event: AttendanceV2Event
+      statement: AttendanceProofStatement
+      /** Off-chain and organizer-attested; not identity or funding evidence. */
+      message: string
+    }
+  | {
+      status:
+        | 'invalid'
+        | 'unsupported'
+        | 'unfinalized'
+        | 'wrong-deployment'
+        | 'unable-to-complete'
+        | 'unconfigured'
+      message: string
+    }
 
 // ---------------------------------------------------------------------------
 // On-chain proposal creation
@@ -1243,6 +1332,63 @@ export function createApplication(
       unsubscribeChainChanged()
       unsubscribeChainChanged = null
     }
+  }
+
+  /**
+   * Reads the immutable attendance commitment for an event. A missing or
+   * unfinalized record is never treated as a usable root.
+   */
+  async function readFinalizedAttendance(proposalId: bigint): Promise<
+    | { status: 'finalized'; record: FinalizedAttendanceRecord }
+    | { status: 'unfinalized' }
+    | { status: 'not-found' }
+    | { status: 'failed' }
+  > {
+    if (!proposalChain || !proposalConfig) return { status: 'failed' }
+    let raw: { version: bigint; count: bigint; root: bigint; finalized: boolean; dataReference: string }
+    try {
+      raw = await proposalChain.readContract({
+        address: proposalConfig.daoAddress,
+        abi: proposalConfig.daoAbi,
+        functionName: 'getAttendance',
+        args: [proposalId],
+      })
+    } catch {
+      // Distinguish a missing proposal from a transport failure with a second read.
+      try {
+        const terms = await readProposalTerms(proposalChain, proposalConfig, proposalId)
+        return terms === null ? { status: 'not-found' } : { status: 'failed' }
+      } catch {
+        return { status: 'failed' }
+      }
+    }
+    if (!raw.finalized) return { status: 'unfinalized' }
+    return {
+      status: 'finalized',
+      record: {
+        version: Number(raw.version),
+        count: Number(raw.count),
+        root: encodeField(BigInt(raw.root)),
+        dataReference: raw.dataReference,
+      },
+    }
+  }
+
+  const attendanceDataset = async (
+    event: AttendanceV2Event,
+    record: FinalizedAttendanceRecord,
+  ): Promise<AttendanceV2Dataset> => {
+    const cid = parseIpfsReference(record.dataReference)
+    if (!cid || !options.ipfs) throw new Error('Attendance data retrieval is unavailable.')
+    const bytes = await options.ipfs.retrieve(cid)
+    const dataset = decodeAttendanceV2Dataset(new TextDecoder().decode(bytes))
+    if (!sameAttendanceV2Event(dataset.event, event)) {
+      throw new Error('The published attendance set belongs to a different event.')
+    }
+    if (dataset.count !== record.count || dataset.root !== record.root) {
+      throw new Error('The published attendance set does not match the on-chain commitment.')
+    }
+    return dataset
   }
 
   return {
@@ -2369,6 +2515,202 @@ export function createApplication(
           return { status: 'signing-failed', message: error.message }
         }
         return { status: 'signing-failed', message: 'The wallet could not sign the attendance message. Try again.' }
+      }
+    },
+
+    /**
+     * Attendee workflow: recovers the v2 credential, validates the published
+     * attendance set, and prepares the local membership witness. Neither the
+     * secret nor the signature leaves this action or appears in its result.
+     */
+    async preparePrivateAttendanceWitness(
+      request: PreparePrivateAttendanceWitnessRequest
+    ): Promise<PreparePrivateAttendanceWitnessResult> {
+      if (!isAttendanceProposalId(request.proposalId)) {
+        return { status: 'invalid-proposal-id', message: 'The proposal ID is not a valid unsigned 256-bit number.' }
+      }
+      if (!options.attendanceProof) {
+        return { status: 'prover-unavailable', message: 'No browser attendance prover is configured.' }
+      }
+      if (!adapter) {
+        return { status: 'wallet-unavailable', message: 'No wallet extension is available to recover the attendance credential.' }
+      }
+      if (!proposalChain || !proposalConfig) {
+        return { status: 'unconfigured', message: 'Attendance proofs require a configured DAO deployment and RPC endpoint.' }
+      }
+      let prepared: PreparedAction
+      try {
+        prepared = await this.prepareDeploymentAction({ target: 'dao' })
+      } catch (error) {
+        if (error instanceof WalletNotConnectedError) {
+          return { status: 'wallet-not-connected', message: 'Connect the wallet that attended the event.' }
+        }
+        if (error instanceof ChainMismatchError) {
+          return {
+            status: 'chain-mismatch',
+            message: `The wallet is on chain ${error.actualChainId}, but this deployment uses chain ${error.expectedChainId}.`,
+          }
+        }
+        if (error instanceof StaleActionConfigurationError) {
+          return { status: 'stale-configuration', message: error.message }
+        }
+        if (error instanceof DeploymentNotConfiguredError || error instanceof DeploymentNotDeployedError) {
+          return { status: 'unconfigured', message: error.message }
+        }
+        throw error
+      }
+
+      const event: AttendanceV2Event = {
+        chainId: prepared.context.chainId,
+        daoAddress: prepared.context.targetAddress,
+        proposalId: request.proposalId,
+      }
+      const recordResult = await readFinalizedAttendance(request.proposalId)
+      if (recordResult.status === 'not-found') {
+        return { status: 'not-found', message: 'This proposal does not exist in the configured DAO.' }
+      }
+      if (recordResult.status === 'unfinalized') {
+        return { status: 'unfinalized', message: 'The organizer has not finalized an attendance set for this event.' }
+      }
+      if (recordResult.status === 'failed') {
+        return { status: 'retrieval-failed', message: 'The attendance commitment could not be read from the configured chain.' }
+      }
+      const { record } = recordResult
+
+      let dataset: AttendanceV2Dataset
+      try {
+        dataset = await attendanceDataset(event, record)
+      } catch {
+        return { status: 'retrieval-failed', message: 'The published attendance set could not be retrieved or validated.' }
+      }
+
+      let signature: Hex
+      try {
+        signature = await adapter.signMessage(prepared.context.account, attendanceV2SigningMessage(event))
+      } catch (error) {
+        if (error instanceof StaleActionConfigurationError) {
+          return { status: 'stale-configuration', message: error.message }
+        }
+        if (error instanceof WalletRejectedError) {
+          return { status: 'wallet-rejected', message: 'The signature request was rejected in your wallet. No witness was prepared.' }
+        }
+        return { status: 'signing-failed', message: 'The wallet could not sign the attendance message. Try again.' }
+      }
+
+      let witness: AttendanceV2Witness | null
+      try {
+        prepared.assertValid()
+        const context = attendanceV2Context(event)
+        const secret = recoverAttendanceV2Secret(context, signature)
+        witness = prepareAttendanceV2Witness(dataset, secret, event)
+      } catch (error) {
+        if (error instanceof StaleActionConfigurationError) {
+          return { status: 'stale-configuration', message: error.message }
+        }
+        return { status: 'invalid-dataset', message: 'The published attendance set could not be validated.' }
+      }
+      if (!witness) {
+        return { status: 'not-attending', message: 'This credential is not present in the finalized attendance set.' }
+      }
+      const localWitness: AttendanceV2Witness = witness
+
+      const account = prepared.context.account.toLowerCase()
+      const chainId = prepared.context.chainId
+      const statement: AttendanceProofStatement = {
+        context: localWitness.context,
+        count: localWitness.count,
+        root: localWitness.root,
+      }
+      const isCurrent = () =>
+        walletState.status === 'connected' &&
+        walletState.account.toLowerCase() === account &&
+        walletChainId === chainId
+
+      const generate = async (): Promise<PrivateAttendanceProofResult> => {
+        if (!isCurrent()) {
+          return { status: 'stale-witness', message: 'The wallet account or network changed. Prepare the witness again.' }
+        }
+        const proofSystem = options.attendanceProof
+        if (!proofSystem) {
+          return { status: 'prover-unavailable', message: 'No browser attendance prover is configured.' }
+        }
+        try {
+          const proof = await proofSystem.prove(localWitness)
+          if (!(await proofSystem.verify(proof, statement))) {
+            return { status: 'proving-failed', message: 'The generated proof did not verify against the trusted verifier artifacts.' }
+          }
+          return {
+            status: 'ready',
+            fileName: privatePresentationFileName(event),
+            file: encodePrivatePresentation(event, proofSystem.id, statement, proof),
+            count: statement.count,
+          }
+        } catch {
+          return { status: 'proving-failed', message: 'Browser proving failed. No proof file was produced.' }
+        }
+      }
+
+      return { status: 'ready', witness: { event, statement, isCurrent, generate } }
+    },
+
+    /**
+     * Verifies an imported private presentation without a wallet or a
+     * transaction. The root and statement come from the configured chain/DAO;
+     * the file's own claim is only compared, never trusted.
+     */
+    async verifyPrivateAttendancePresentation(file: string): Promise<VerifyPrivateAttendanceResult> {
+      let parsed
+      try {
+        parsed = decodePrivatePresentation(file)
+      } catch (error) {
+        if (error instanceof UnsupportedPresentationError) {
+          return { status: 'unsupported', message: error.message }
+        }
+        return { status: 'unsupported', message: 'The presentation is not a supported attendance proof file.' }
+      }
+      if (!deploymentContext.daoAddress || !proposalConfig) {
+        return { status: 'unconfigured', message: 'Verification requires a configured DAO deployment and RPC endpoint.' }
+      }
+      if (
+        parsed.event.chainId !== deploymentContext.chainId ||
+        parsed.event.daoAddress.toLowerCase() !== deploymentContext.daoAddress.toLowerCase()
+      ) {
+        return { status: 'wrong-deployment', message: 'The presentation was generated for a different chain or DAO deployment.' }
+      }
+      const recordResult = await readFinalizedAttendance(parsed.event.proposalId)
+      if (recordResult.status === 'not-found') {
+        return { status: 'unfinalized', message: 'This event does not exist in the configured DAO.' }
+      }
+      if (recordResult.status === 'unfinalized') {
+        return { status: 'unfinalized', message: 'The organizer has not finalized an attendance set for this event.' }
+      }
+      if (recordResult.status === 'failed') {
+        return { status: 'unable-to-complete', message: 'The attendance commitment could not be read from the configured chain.' }
+      }
+      const { record } = recordResult
+      const context = encodeField(attendanceV2Context(parsed.event))
+      if (!presentationMatchesRecord(parsed, context, record)) {
+        return { status: 'invalid', message: 'The presentation statement does not match the finalized attendance commitment.' }
+      }
+      const proofSystem = options.attendanceProof
+      if (!proofSystem || proofSystem.id !== parsed.proofSystem) {
+        return { status: 'unable-to-complete', message: 'The application-trusted verifier for this proof format is unavailable.' }
+      }
+      let valid: boolean
+      try {
+        valid = await proofSystem.verify(parsed.proof, parsed.statement)
+      } catch {
+        return { status: 'unable-to-complete', message: 'Proof verification could not be completed.' }
+      }
+      if (!valid) {
+        return { status: 'invalid', message: 'The proof is not valid for the finalized attendance commitment.' }
+      }
+      return {
+        status: 'valid',
+        event: parsed.event,
+        statement: parsed.statement,
+        message:
+          'Valid off-chain attendance presentation. It proves possession of an organizer-attested credential, not personal identity, funding approval, payout evidence, or independent physical presence. Credentials are transferable.',
       }
     },
 

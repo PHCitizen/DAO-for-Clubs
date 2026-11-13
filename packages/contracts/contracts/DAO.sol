@@ -16,6 +16,11 @@ error NotVotingNftHolder();
 error InsufficientYesVotes();
 error NotProposalCreator();
 error ProposalNotPassed();
+error AttendanceAlreadyFinalized();
+error UnsupportedAttendanceVersion();
+error InvalidAttendanceCount();
+error InvalidAttendanceRoot();
+error InvalidAttendanceReference();
 error FundsAlreadyReleased();
 error ReentrantCall();
 
@@ -78,6 +83,31 @@ contract DAO {
     event FundingShortage(uint256 indexed proposalId, uint256 available, uint256 required);
     /// Emitted when the balance sufficed but the asset's transfer failed; the payment was rolled back and the proposal stays retryable.
     event FundsTransferFailed(uint256 indexed proposalId, address indexed treasury, uint256 amount);
+
+    /**
+     * @notice Immutable, organizer-finalized attendance commitment for an event.
+     * The v2 credential version is fixed here; a finalized record can never be
+     * replaced, which prevents a proof-format upgrade from resetting anything.
+     * `root` is the approved Poseidon2 attendance v2 root bound to the chain,
+     * DAO, proposal, credential version and entry count.
+     */
+    struct AttendanceRecord {
+        uint256 version;
+        uint256 count;
+        uint256 root;
+        bool finalized;
+        string dataReference;
+    }
+
+    mapping(uint256 => AttendanceRecord) private _attendance;
+
+    event AttendanceFinalized(
+        uint256 indexed proposalId,
+        uint256 version,
+        uint256 count,
+        uint256 root,
+        string dataReference
+    );
 
     event TreasuryCreated(address indexed treasury, address indexed administrator);
     event ProposalCreated(
@@ -189,6 +219,53 @@ contract DAO {
     function getProposal(uint256 proposalId) external view returns (Proposal memory) {
         if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
         return _proposals[proposalId];
+    }
+
+    /**
+     * @notice Organizer-only, one-shot finalization of an attendance set root.
+     * Finalization is independent of voting and funding. The credential version
+     * is immutable and no later call can replace or clear the record.
+     * @param proposalId Event whose attendance is being finalized.
+     * @param version Credential/format version; only the approved v2 is accepted.
+     * @param count Number of unique entries in the published set (0..1024).
+     * @param root Canonical attendance v2 root below the BN254 scalar field prime.
+     * @param dataReference Content-addressed reference to the canonical dataset.
+     */
+    function finalizeAttendance(
+        uint256 proposalId,
+        uint256 version,
+        uint256 count,
+        uint256 root,
+        string calldata dataReference
+    ) external {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
+        if (msg.sender != _proposals[proposalId].creator) revert NotProposalCreator();
+        if (_attendance[proposalId].finalized) revert AttendanceAlreadyFinalized();
+        if (version != 2) revert UnsupportedAttendanceVersion();
+        if (count > 1024) revert InvalidAttendanceCount();
+        if (root >= 21888242871839275222246405745257275088548364400416034343698204186575808495617) {
+            revert InvalidAttendanceRoot();
+        }
+        if (bytes(dataReference).length == 0) revert InvalidAttendanceReference();
+
+        _attendance[proposalId] = AttendanceRecord({
+            version: version,
+            count: count,
+            root: root,
+            finalized: true,
+            dataReference: dataReference
+        });
+        emit AttendanceFinalized(proposalId, version, count, root, dataReference);
+    }
+
+    /**
+     * @notice Returns the immutable attendance record for an event.
+     * Callers must treat `finalized == false` as "not published"; a zero root is
+     * not used as an unfinalized sentinel.
+     */
+    function getAttendance(uint256 proposalId) external view returns (AttendanceRecord memory) {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
+        return _attendance[proposalId];
     }
 
     /// @notice One immutable ballot per treasury credential per proposal.
