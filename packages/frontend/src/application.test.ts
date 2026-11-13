@@ -100,7 +100,12 @@ const ACCOUNT_B = '0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB02' as const
 // ---------------------------------------------------------------------------
 
 test('a visitor can read the welcome content without a wallet or RPC', () => {
-  const application = createApplication()
+  // Explicitly exercise the not-deployed scaffold state; the generated local
+  // deployment file may contain real addresses on a developer machine.
+  const application = createApplication(undefined, undefined, {
+    daoAddress: null,
+    testUsdAddress: null,
+  })
   expect(application.readHome()).toEqual({
     title: 'DAO for Clubs',
     description: 'Explore your organization. No wallet required to get started.',
@@ -125,7 +130,10 @@ test('read-only content is accessible without a wallet adapter', () => {
 // ---------------------------------------------------------------------------
 
 test('displays configured deployment context with default local development chain', () => {
-  const application = createApplication()
+  const application = createApplication(undefined, undefined, {
+    daoAddress: null,
+    testUsdAddress: null,
+  })
   const deployment = application.readDeployment()
   expect(deployment.chainId).toBe(31337)
   expect(deployment.chainName).toBe('Local Development')
