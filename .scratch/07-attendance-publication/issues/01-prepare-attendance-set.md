@@ -47,13 +47,20 @@ This ends with a prepared publication, not IPFS pinning or on-chain finalization
   and invalidates previews on later local or cross-tab saved-input changes. Fixed
   tree computation yields periodically so camera/account callbacks can run.
 - Implemented first, then tested, per the user's explicit testing-order override.
-  `pnpm test`: **234 frontend tests + 92 contract/tooling tests pass**.
+  Verification: **236 frontend tests pass; 92 contract/tooling tests passed in
+  earlier full runs**. A later combined `pnpm check` hit the unchanged funding
+  replacement-transaction test's 30-second timeout; immediate isolated execution
+  of that test passed in 384 ms. No timeout or funding behavior was changed.
   `pnpm build`, `pnpm typecheck`, direct adapter regeneration, and
   `git diff --check` pass. Tests are through public application APIs, including
   the real local DAO integration in
   `packages/contracts/test/attendance-preparation-app.test.ts`; canonical vector,
   real EOA collection, edge-size, isolation and stale-input coverage is in
   `packages/frontend/src/attendance-publication.test.ts`.
+  Checks used freshly compiled real ABIs with null/unconfigured deployment
+  addresses in the ignored frontend artifact file; no deployment metadata was
+  committed. Refresh public ABIs via the normal local deployment/export flow
+  before using the UI against a configured deployment.
 - Chrome 157 functional smoke through public application APIs reproduces the
   approved credential entry and singleton root using the real browser arithmetic
   runtime. This browser smoke replaced wallet/RPC/camera transports; real contract

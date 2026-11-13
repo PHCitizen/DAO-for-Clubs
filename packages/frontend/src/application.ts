@@ -2494,6 +2494,7 @@ export function createApplication(
         attendancePreviews.set(key, { source, set })
         return { status: 'prepared', set }
       } catch (error) {
+        if (error instanceof StaleActionConfigurationError) return { status: 'stale', message: 'The organizer or network changed. Prepare attendance again.' }
         return { status: 'invalid', message: error instanceof Error ? error.message : 'Attendance preparation failed.' }
       }
     },

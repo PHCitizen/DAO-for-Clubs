@@ -23,11 +23,14 @@ function setup(options: { version?: number; chainId?: number; dao?: Address; pro
   const data = new Map<string, string>()
   const storage: AttendanceStorage = options.storage ?? { getItem: key => data.get(key) ?? null, setItem: (key, value) => { data.set(key, value) } }
   let emit: (payload: string) => void = () => {}
+  let accountChanged: (event: { account: Address | null }) => void = () => {}
+  let chainChanged: (event: { chainId: number }) => void = () => {}
   const signMessage = vi.fn((_account: Address, message: string) => options.signer ? options.signer(message) : SIGNER.signMessage({ message }))
   const wallet = {
     isAvailable: () => true, connect: async () => options.account ?? SIGNER.address, disconnect: async () => {},
     getAccount: async () => options.account ?? SIGNER.address, getChainId: async () => chainId,
-    onAccountChanged: () => () => {}, onChainChanged: () => () => {},
+    onAccountChanged: (listener: typeof accountChanged) => { accountChanged = listener; return () => {} },
+    onChainChanged: (listener: typeof chainChanged) => { chainChanged = listener; return () => {} },
     switchChain: async () => {}, sendTransaction: vi.fn(), signMessage,
   } as unknown as WalletAdapter
   const rpc = { getChainId: async () => chainId, readContract: async ({ functionName }: { functionName: string }) => {
@@ -37,7 +40,7 @@ function setup(options: { version?: number; chainId?: number; dao?: Address; pro
     throw new Error(`Unexpected read ${functionName}`)
   } } as unknown as RpcAdapter
   const app = createApplication(wallet, rpc, { chainId, daoAddress, testUsdAddress: TOKEN }, { attendanceStorage: storage, camera: { start: async handler => { emit = handler; return { stop() {} } } } })
-  return { app, event, data, storage, signMessage, scan: (entry: Hex) => emit(encodeAttendanceV2Qr(event, entry)), payload: (payload: string) => emit(payload) }
+  return { app, event, data, storage, signMessage, changeAccount: (account: Address) => accountChanged({ account }), changeChain: (chainId: number) => chainChanged({ chainId }), scan: (entry: Hex) => emit(encodeAttendanceV2Qr(event, entry)), payload: (payload: string) => emit(payload) }
 }
 
 async function start(options: Parameters<typeof setup>[0] = {}) {
@@ -132,6 +135,17 @@ test('another tab modifying saved entries invalidates a preview and requires rel
   env.data.set(key, JSON.stringify({ ...JSON.parse(raw), entries: [hex(1n), hex(2n)] }))
   expect(env.app.readPreparedAttendanceSet({ proposalId: 42n }).status).toBe('stale')
   expect((await env.app.prepareAttendanceSet({ proposalId: 42n })).status).toBe('unsaved')
+})
+
+test.each(['account', 'chain'])('a wallet %s change during preparation cannot install a preview', async change => {
+  const env = await start()
+  env.scan(hex(1n))
+  const pending = env.app.prepareAttendanceSet({ proposalId: 42n })
+  await new Promise(resolve => setTimeout(resolve, 5))
+  if (change === 'account') env.changeAccount(TOKEN)
+  else env.changeChain(98)
+  expect((await pending).status).toBe('stale')
+  expect(env.app.readPreparedAttendanceSet({ proposalId: 42n }).status).toBe('not-prepared')
 })
 
 test('v1, mixed-version, wrong-context and noncanonical QR inputs cannot contaminate a v2 collection', async () => {
