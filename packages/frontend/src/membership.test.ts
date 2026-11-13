@@ -130,6 +130,7 @@ function makeMembershipHarness(overrides: Partial<MembershipStubState> = {}) {
 
   const adapter: WalletAdapter = {
     isAvailable: () => true,
+    signMessage: vi.fn().mockResolvedValue('0x'),
     connect: vi.fn().mockResolvedValue(state.connectedAccount),
     disconnect: vi.fn().mockResolvedValue(undefined),
     getAccount: vi.fn().mockResolvedValue(state.connectedAccount),
