@@ -66,6 +66,12 @@ import {
   encodeProposalDocument,
   renderProposalMarkdown,
 } from './proposal.js'
+import {
+  type IpfsCredentials,
+  type IpfsTransport,
+  formatIpfsReference,
+  isValidCid,
+} from './ipfs.js'
 
 // ---------------------------------------------------------------------------
 // Wallet connection and network state
@@ -588,10 +594,55 @@ export interface EncodedProposalDraft {
 
 export type ProposalDraftListener = (draft: ProposalDraft) => void
 
+// ---------------------------------------------------------------------------
+// Proposal document pinning
+// ---------------------------------------------------------------------------
+//
+// Pinning publishes the exact reviewed document to IPFS. It never allocates a
+// proposal ID and never claims an on-chain proposal exists.
+
+export const PROPOSAL_DOCUMENT_FILENAME = 'proposal-document.json'
+export const PROPOSAL_DOCUMENT_CONTENT_TYPE = 'application/json'
+
+export interface ProposalPin {
+  /** The document snapshot that was uploaded. */
+  document: ProposalDocument
+  /** Exact uploaded bytes; the reference is bound to these bytes only. */
+  bytes: Uint8Array
+  cid: string
+  /** `ipfs://<cid>` reference for a later on-chain proposal. */
+  reference: string
+}
+
+export type ProposalPinState =
+  | { status: 'not-pinned' }
+  | { status: 'uploading' }
+  | { status: 'pinned'; pin: ProposalPin }
+  /** A pin exists, but the current draft no longer matches its bytes. */
+  | { status: 'draft-changed'; previousReference: string }
+  | { status: 'upload-failed'; message: string; retryable: true }
+
+export type ProposalPinResult =
+  | { status: 'pinned'; pin: ProposalPin }
+  | { status: 'invalid-draft'; message: string }
+  | { status: 'credentials-required'; message: string }
+  | { status: 'ipfs-unavailable'; message: string }
+  | { status: 'busy'; message: string }
+  | { status: 'upload-failed'; message: string; retryable: true }
+  | { status: 'invalid-upload-result'; message: string; retryable: true }
+  /** Uploaded bytes belong to an older draft; the current draft is not pinned. */
+  | { status: 'draft-changed-during-upload'; message: string; pin: ProposalPin }
+
+export interface ApplicationOptions {
+  /** IPFS transport used for proposal pinning; omit to disable pinning. */
+  ipfs?: IpfsTransport
+}
+
 export function createApplication(
   adapter?: WalletAdapter,
   injectedRpcAdapter?: RpcAdapter,
-  deploymentConfig?: Partial<DeploymentConfig>
+  deploymentConfig?: Partial<DeploymentConfig>,
+  options: ApplicationOptions = {}
 ) {
   const deploymentContext: DeploymentContext = resolveDeploymentContext(deploymentConfig)
 
@@ -748,6 +799,46 @@ export function createApplication(
     }
   }
 
+  const ipfs = options.ipfs ?? null
+
+  // Only the pinned document/bytes/reference are retained. Credentials are
+  // never stored in application state.
+  let pinnedProposal: ProposalPin | null = null
+  let proposalUploadInFlight = false
+  let proposalUploadError: string | null = null
+  const proposalPinListeners = new Set<(state: ProposalPinState) => void>()
+
+  function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+    if (a.byteLength !== b.byteLength) return false
+    for (let i = 0; i < a.byteLength; i += 1) {
+      if (a[i] !== b[i]) return false
+    }
+    return true
+  }
+
+  function currentProposalBytes(): Uint8Array {
+    return encodeProposalDocument(currentProposalDocument())
+  }
+
+  function readProposalPinState(): ProposalPinState {
+    if (proposalUploadInFlight) return { status: 'uploading' }
+    if (pinnedProposal) {
+      if (bytesEqual(pinnedProposal.bytes, currentProposalBytes())) {
+        return { status: 'pinned', pin: pinnedProposal }
+      }
+      return { status: 'draft-changed', previousReference: pinnedProposal.reference }
+    }
+    if (proposalUploadError !== null) {
+      return { status: 'upload-failed', message: proposalUploadError, retryable: true }
+    }
+    return { status: 'not-pinned' }
+  }
+
+  function emitProposalPinState() {
+    const state = readProposalPinState()
+    for (const listener of proposalPinListeners) listener(state)
+  }
+
   async function fundingBalances(treasury: Address, sender: Address): Promise<FundingBalances> {
     const contracts = rpc?.contracts
     const dao = deploymentContext.daoAddress
@@ -832,8 +923,12 @@ export function createApplication(
         title: change.title ?? proposalDraft.title,
         markdown: change.markdown ?? proposalDraft.markdown,
       }
+      // A new edit starts a fresh upload attempt; any previous pin is kept
+      // only so staleness can be reported against the changed draft.
+      proposalUploadError = null
       const snapshot = { ...proposalDraft }
       for (const listener of proposalDraftListeners) listener(snapshot)
+      emitProposalPinState()
       return snapshot
     },
 
@@ -855,6 +950,114 @@ export function createApplication(
     encodeProposalDraft(): EncodedProposalDraft {
       const document = currentProposalDocument()
       return { document, bytes: encodeProposalDocument(document) }
+    },
+
+    readProposalPinState,
+
+    onProposalPinStateChanged(listener: (state: ProposalPinState) => void) {
+      proposalPinListeners.add(listener)
+      return () => {
+        proposalPinListeners.delete(listener)
+      }
+    },
+
+    /**
+     * Uploads the exact reviewed document bytes with the proposer's own
+     * credentials and binds the returned reference to those bytes. The token
+     * is used for this request only and is never retained.
+     */
+    async pinProposalDraft(credentials: IpfsCredentials): Promise<ProposalPinResult> {
+      if (!ipfs) {
+        return {
+          status: 'ipfs-unavailable',
+          message: 'No IPFS pinning transport is configured for this application.',
+        }
+      }
+      if (proposalUploadInFlight) {
+        return { status: 'busy', message: 'An upload is already in progress.' }
+      }
+      if (credentials.token.trim().length === 0) {
+        return {
+          status: 'credentials-required',
+          message: 'Enter your own IPFS pinning token to upload the document.',
+        }
+      }
+      if (proposalDraft.title.trim().length === 0) {
+        return { status: 'invalid-draft', message: 'Give the proposal an event title before pinning.' }
+      }
+      if (proposalDraft.markdown.trim().length === 0) {
+        return {
+          status: 'invalid-draft',
+          message: 'Write the event and funding request before pinning.',
+        }
+      }
+
+      // Capture the reviewed bytes now; a later edit must not change what is
+      // uploaded or which document the reference describes.
+      const { document, bytes } = this.encodeProposalDraft()
+      proposalUploadError = null
+      proposalUploadInFlight = true
+      emitProposalPinState()
+
+      const fail = (
+        status: 'upload-failed' | 'invalid-upload-result',
+        message: string
+      ): ProposalPinResult => {
+        proposalUploadInFlight = false
+        proposalUploadError = message
+        emitProposalPinState()
+        return { status, message, retryable: true }
+      }
+
+      let pin: ProposalPin
+      try {
+        const receipt = await ipfs.pin(
+          {
+            bytes,
+            name: PROPOSAL_DOCUMENT_FILENAME,
+            contentType: PROPOSAL_DOCUMENT_CONTENT_TYPE,
+          },
+          { token: credentials.token }
+        )
+        if (!isValidCid(receipt.cid)) {
+          return fail(
+            'invalid-upload-result',
+            'The pinning service returned an invalid content identifier. Nothing was pinned for this draft.'
+          )
+        }
+        if (receipt.size !== undefined && receipt.size !== bytes.byteLength) {
+          return fail(
+            'invalid-upload-result',
+            'The pinning service reported a different document size than the reviewed draft.'
+          )
+        }
+        pin = {
+          document,
+          bytes,
+          cid: receipt.cid,
+          reference: formatIpfsReference(receipt.cid),
+        }
+      } catch (error) {
+        return fail(
+          'upload-failed',
+          `The document upload failed and can be retried: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+
+      pinnedProposal = pin
+      proposalUploadInFlight = false
+      proposalUploadError = null
+      emitProposalPinState()
+
+      if (!bytesEqual(currentProposalBytes(), bytes)) {
+        return {
+          status: 'draft-changed-during-upload',
+          message:
+            'The draft changed during upload. The returned reference describes the older document; pin the updated draft before creating a proposal.',
+          pin,
+        }
+      }
+      return { status: 'pinned', pin }
     },
 
     readFundingState: () => fundingState,
