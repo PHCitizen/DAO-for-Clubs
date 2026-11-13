@@ -1,10 +1,15 @@
-import { expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 import type { Address } from 'viem'
 import { createApplication } from './application'
-import { CameraError, type CameraScanner } from './attendanceScan'
+import { createBrowserCameraScanner } from './browserCamera'
+import { REPEAT_DETECTION_WINDOW_MS, CameraError, type CameraScanner } from './attendanceScan'
 import { encodeAttendanceQr } from './attendance'
 import type { RpcAdapter } from './rpc'
 import type { WalletAdapter } from './wallet'
+
+beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }) })
+afterEach(() => { vi.useRealTimers() })
+const nextFrameBurst = () => vi.setSystemTime(Date.now() + REPEAT_DETECTION_WINDOW_MS + 1)
 
 const DAO: Address = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
 const OTHER_DAO: Address = '0x00000000000000000000000000000000000000d1'
@@ -37,7 +42,7 @@ function fakeCamera(failure?: CameraError) {
   return { camera, scan: (payload: string) => emit(payload), stop }
 }
 
-function setup(options: { account?: Address | null; creator?: Address; camera?: CameraScanner } = {}) {
+function setup(options: { account?: Address | null; creator?: Address; camera?: CameraScanner; accountChanged?: { fire?: (account: Address) => void } } = {}) {
   const account = options.account === undefined ? ORGANIZER : options.account
   const sendTransaction = vi.fn()
   const wallet = {
@@ -46,7 +51,10 @@ function setup(options: { account?: Address | null; creator?: Address; camera?: 
     disconnect: async () => {},
     getAccount: async () => account,
     getChainId: async () => 31337,
-    onAccountChanged: () => () => {},
+    onAccountChanged: (handler: (event: { account: Address | null }) => void) => {
+      if (options.accountChanged) options.accountChanged.fire = account => handler({ account })
+      return () => {}
+    },
     onChainChanged: () => () => {},
     switchChain: async () => {},
     sendTransaction,
@@ -98,7 +106,8 @@ test('scan feedback reports accepted, duplicate, and rejected outcomes without c
   session.onScan(result => seen.push(`${result.status}:${result.count}`))
 
   cam.scan(qr())
-  cam.scan(qr()) // identical entry
+  nextFrameBurst()
+  cam.scan(qr()) // identical entry, scanned again later
   cam.scan(qr({ entry: ENTRY_A.toUpperCase().replace('0X', '0x') as `0x${string}` })) // same entry, other casing
   cam.scan('not json')
 
@@ -222,4 +231,64 @@ test('stopping the camera keeps accepted entries; restarting continues the same 
   expect(second.session.read().entries).toEqual([ENTRY_A])
   cam.scan(qr()) // dedupe survives a camera restart
   expect(second.session.read().count).toBe(1)
+})
+
+test('the camera re-detecting a held code does not overwrite the accepted feedback', async () => {
+  const { cam, session } = await start()
+  const seen: string[] = []
+  session.onScan(result => seen.push(`${result.status}:${result.count}`))
+
+  cam.scan(qr())
+  cam.scan(qr()) // next frames still see the same code
+  cam.scan(qr())
+  expect(seen).toEqual(['accepted:1'])
+
+  cam.scan(qr({ entry: ENTRY_B })) // a different code is a new scan
+  nextFrameBurst()
+  cam.scan(qr({ entry: ENTRY_B })) // deliberate rescan later is reported as a duplicate
+  expect(seen).toEqual(['accepted:1', 'accepted:2', 'duplicate:2'])
+})
+
+test('a session stops itself when the connected account is no longer the proposal creator', async () => {
+  const cam = fakeCamera()
+  const changes: { fire?: (account: Address) => void } = {}
+  const env = setup({ camera: cam.camera, accountChanged: changes })
+  await env.app.connect()
+  const result = await env.app.startAttendanceScan({ proposalId: 1n })
+  if (result.status !== 'scanning') throw new Error('expected scanning')
+  const stopped = vi.fn()
+  result.session.onStop(stopped)
+
+  cam.scan(qr())
+  changes.fire?.(ATTENDEE_WALLET) // wallet switches to another account
+  cam.scan(qr({ entry: ENTRY_B }))
+
+  expect(result.session.read().entries).toEqual([ENTRY_A])
+  expect(cam.stop).toHaveBeenCalled()
+  expect(stopped).toHaveBeenCalledTimes(1)
+})
+
+test('starting a second scan for the same event stops the first camera', async () => {
+  const first = fakeCamera()
+  const { app } = setup({ camera: first.camera })
+  await app.connect()
+  const a = await app.startAttendanceScan({ proposalId: 1n })
+  const b = await app.startAttendanceScan({ proposalId: 1n })
+  if (a.status !== 'scanning' || b.status !== 'scanning') throw new Error('expected scanning')
+
+  expect(first.stop).toHaveBeenCalledTimes(1)
+  first.scan(qr())
+  expect(b.session.read().count).toBe(1)
+})
+
+test('browser camera maps permission errors and other failures to explained camera errors', async () => {
+  const detector = class { async detect() { return [] } }
+  const failing = (name: string) =>
+    createBrowserCameraScanner(() => ({
+      BarcodeDetector: detector,
+      mediaDevices: { getUserMedia: async () => { throw Object.assign(new Error('x'), { name }) } },
+    }))
+  await expect(failing('NotAllowedError').start(() => {})).rejects.toMatchObject({ kind: 'permission-denied' })
+  await expect(failing('NotFoundError').start(() => {})).rejects.toMatchObject({ kind: 'unavailable' })
+  await expect(createBrowserCameraScanner(() => ({})).start(() => {})).rejects.toMatchObject({ kind: 'unavailable' })
 })

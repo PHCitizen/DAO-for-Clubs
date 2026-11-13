@@ -16,6 +16,12 @@
 - [x] Scanning needs no attendee NFT, successful vote, payout, or per-scan chain transaction. Camera permission errors and malformed input do not corrupt the accepted set.
 - [x] Behavioral tests use controlled camera payloads for accepted/duplicate/malformed/mismatched scans and camera failure; document a real camera smoke check. (Smoke check documented in docs/attendance-scanning.md but NOT yet executed on a real camera.)
 
+## Notes
+
+- The finalized-event rule (refusing scans once the event is finalized) is deferred; it is not implemented here.
+- Real-camera smoke check (docs/attendance-scanning.md) is still pending and has not been run on a real device.
+- Repeated detections of the same payload within a short window are one scan (session layer); dedupe of entries stays in the collection.
+
 ## Scope
 
 This delivers in-session collection. Persistence/reload is next. Do not introduce delegated scanners, synchronization, personal identity guarantees, or a Merkle format before feasibility work.
