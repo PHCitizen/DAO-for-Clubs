@@ -239,6 +239,13 @@ export type TreasuryListResult =
     }
   | TreasuryReadFailure
 
+export type TreasuryCreationState =
+  | { status: 'idle' }
+  | { status: 'submitting' }
+  | { status: 'pending'; hash: Hex }
+  | { status: 'confirmed'; hash: Hex; treasury: Address }
+  | { status: 'failed'; message: string; hash?: Hex }
+
 export type TreasuryDetailResult =
   | {
       status: 'success'
@@ -817,6 +824,14 @@ export function createApplication(
 
   const publicAbis = publicArtifacts.abis as unknown as TreasuryAbis
 
+  let treasuryCreationState: TreasuryCreationState = { status: 'idle' }
+  let treasuryCreationBusy = false
+  const treasuryCreationListeners = new Set<(state: TreasuryCreationState) => void>()
+  function emitTreasuryCreation(state: TreasuryCreationState) {
+    treasuryCreationState = state
+    for (const listener of treasuryCreationListeners) listener(state)
+  }
+
   const treasuryReads: TreasuryReads | null =
     rpc?.readContract && deploymentContext.daoAddress
       ? createTreasuryReads(
@@ -1105,6 +1120,69 @@ export function createApplication(
   }
 
   return {
+    readTreasuryCreationState: () => treasuryCreationState,
+
+    onTreasuryCreationStateChanged(listener: (state: TreasuryCreationState) => void) {
+      treasuryCreationListeners.add(listener)
+      return () => { treasuryCreationListeners.delete(listener) }
+    },
+
+    async createTreasury(): Promise<TreasuryCreationState> {
+      if (treasuryCreationBusy) return treasuryCreationState
+      treasuryCreationBusy = true
+      let hash: Hex | undefined
+      try {
+        if (!adapter) throw new WalletUnavailableError()
+        if (!deploymentContext.isSupported || !rpc?.waitForTransactionReceipt) {
+          throw new Error('Treasury creation requires a supported deployment and transaction confirmation RPC.')
+        }
+        emitTreasuryCreation({ status: 'submitting' })
+        const prepared = await this.prepareDeploymentAction({ target: 'dao' })
+        const [rpcChain, account, chainId] = await Promise.all([
+          rpc.getChainId(), adapter.getAccount(), adapter.getChainId(),
+        ])
+        if (rpcChain !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, rpcChain)
+        if (chainId !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, chainId ?? 0)
+        if (account?.toLowerCase() !== prepared.context.account.toLowerCase()) throw new StaleActionConfigurationError()
+        prepared.assertValid()
+        hash = await adapter.sendTransaction({
+          from: prepared.context.account,
+          to: prepared.context.targetAddress,
+          abi: publicAbis.DAO,
+          functionName: 'createTreasury',
+          args: [],
+        })
+        emitTreasuryCreation({ status: 'pending', hash })
+        const receipt = await rpc.waitForTransactionReceipt(hash)
+        if (receipt.status !== 'success') throw new Error('The treasury creation transaction reverted.')
+        let treasury: Address | undefined
+        for (const log of receipt.logs) {
+          if (log.address.toLowerCase() !== prepared.context.targetAddress.toLowerCase()) continue
+          try {
+            const event = decodeEventLog({ abi: publicAbis.DAO, eventName: 'TreasuryCreated', data: log.data, topics: [...log.topics] as [Hex, ...Hex[]] })
+            const args = event.args as unknown as { treasury: Address; administrator: Address }
+            if (args.administrator.toLowerCase() === prepared.context.account.toLowerCase()) treasury = args.treasury
+          } catch { /* Ignore unrelated logs. */ }
+        }
+        if (!treasury) throw new Error('The transaction was mined, but its treasury creation event could not be verified.')
+        emitTreasuryCreation({ status: 'confirmed', hash, treasury })
+      } catch (error) {
+        const rejected = error instanceof TransactionRejectedError ||
+          (error !== null && typeof error === 'object' && 'code' in error && error.code === 4001)
+        emitTreasuryCreation({
+          status: 'failed',
+          message: hash
+            ? `${error instanceof Error ? error.message : String(error)} Review the transaction before trying again.`
+            : rejected ? 'Transaction rejected in your wallet. Nothing was submitted.'
+              : error instanceof Error ? error.message : String(error),
+          ...(hash ? { hash } : {}),
+        })
+      } finally {
+        treasuryCreationBusy = false
+      }
+      return treasuryCreationState
+    },
+
     async readVoting(proposalId: bigint): Promise<VotingReadResult> {
       if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'Voting requires a configured DAO and RPC endpoint.' }
       try {

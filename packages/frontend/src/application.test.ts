@@ -23,7 +23,7 @@
  */
 
 import { expect, test, vi } from 'vitest'
-import { getAddress, type Hex } from 'viem'
+import { encodeEventTopics, getAddress, parseAbi, type Hex } from 'viem'
 import { createApplication } from './application'
 import type { ContractReadRequest } from './treasury'
 import type { TestUsdTransactionLog } from './testusd'
@@ -94,6 +94,52 @@ function makeAdapter(overrides?: Partial<WalletAdapter>): ControlledAdapter {
 
 const ACCOUNT_A = '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA01' as const
 const ACCOUNT_B = '0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB02' as const
+
+test('treasury creation waits for a DAO creation event and exposes the confirmed treasury', async () => {
+  const hash = `0x${'12'.repeat(32)}` as Hex
+  const treasury = '0x1111111111111111111111111111111111111111'
+  const adapter = makeAdapter({ getAccount: async () => ACCOUNT_A, connect: async () => ACCOUNT_A, sendTransaction: vi.fn().mockResolvedValue(hash) })
+  const application = createApplication(adapter, {
+    getChainId: async () => 31337,
+    getBlockNumber: async () => 1n,
+    waitForTransactionReceipt: async () => ({ status: 'success', transactionHash: hash, blockNumber: 1n, logs: [{
+      address: ACCOUNT_B, data: '0x', topics: encodeEventTopics({
+        abi: parseAbi(['event TreasuryCreated(address indexed treasury, address indexed administrator)']),
+        eventName: 'TreasuryCreated', args: { treasury, administrator: ACCOUNT_A },
+      }) as Hex[],
+    }] }),
+  }, { chainId: 31337, daoAddress: ACCOUNT_B })
+  await application.connect()
+  const states: string[] = []
+  application.onTreasuryCreationStateChanged(state => states.push(state.status))
+  expect(await application.createTreasury()).toEqual({ status: 'confirmed', hash, treasury })
+  expect(states).toEqual(['submitting', 'pending', 'confirmed'])
+  expect(adapter.sendTransaction).toHaveBeenCalledWith(expect.objectContaining({ functionName: 'createTreasury', args: [] }))
+})
+
+test('treasury creation requires a connected wallet and does not submit while disconnected', async () => {
+  const adapter = makeAdapter()
+  const application = createApplication(adapter, {
+    getChainId: async () => 31337,
+    getBlockNumber: async () => 1n,
+    waitForTransactionReceipt: vi.fn(),
+  }, { chainId: 31337, daoAddress: ACCOUNT_B })
+  const result = await application.createTreasury()
+  expect(result.status).toBe('failed')
+  expect(adapter.sendTransaction).not.toHaveBeenCalled()
+})
+
+test('treasury creation does not submit against a mismatched RPC chain', async () => {
+  const adapter = makeAdapter({ getAccount: async () => ACCOUNT_A, connect: async () => ACCOUNT_A })
+  const application = createApplication(adapter, {
+    getChainId: async () => 97,
+    getBlockNumber: async () => 1n,
+    waitForTransactionReceipt: vi.fn(),
+  }, { chainId: 31337, daoAddress: ACCOUNT_B })
+  await application.connect()
+  expect((await application.createTreasury()).status).toBe('failed')
+  expect(adapter.sendTransaction).not.toHaveBeenCalled()
+})
 
 // ---------------------------------------------------------------------------
 // Read-only content without wallet
