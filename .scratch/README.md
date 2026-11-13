@@ -28,6 +28,10 @@ Latest scope: **Chrome only**. [TODO-02: shared attendance format agreement](../
 
 ## Workspace agreement
 
+### Attendance format approval
+
+The user approved [the minimal v2 POC format](../docs/attendance-format-v2-proposal.md). **TODO-02 is resolved; feature 07's cryptographic-format gate is cleared.** Implement against the exact approved format and durable vectors, subject to normal ticket dependencies (07.01 still requires 06.03). Earlier statements about outstanding shared-format approval are superseded by this decision. TODO-01 remains open only for private Chrome proof qualification; its security/performance issues do not re-block feature 07. Public-claim cost acceptance and deployment remain separate gates.
+
 Use pnpm with a pinned package-manager version and shared lockfile. Scaffold a frontend workspace package and a contracts/tooling workspace package. The latter owns Solidity, Hardhat, contract tests, and deployment/maintenance scripts. Root commands orchestrate the workspace; filtered commands support focused work.
 
 Expose generated public ABIs and deployment information through an explicit handoff. Do not import deployment secrets or Node-only tooling into the frontend. Additional packages require a demonstrated shared responsibility rather than speculative architecture.

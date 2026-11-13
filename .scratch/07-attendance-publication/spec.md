@@ -3,6 +3,8 @@
 Status: ready-for-agent
 Blocked by: TODO-02 for the approved canonical cryptographic format, not completion of private-proof qualification in TODO-01
 
+Format gate satisfied: TODO-02 is resolved following explicit user approval of `docs/attendance-format-v2-proposal.md`. Feature 07 implementation can proceed subject to its normal ticket dependencies. Private-proof security/performance qualification remains separate.
+
 ## Problem Statement
 
 A locally collected attendance set is not independently verifiable until the organizer publishes an authenticated commitment and makes the membership data available. Organizers must understand that public data is public and that finalization cannot be undone.
