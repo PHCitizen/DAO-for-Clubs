@@ -1,4 +1,4 @@
-import { encodeFunctionData, type Abi, type Hex } from 'viem'
+import { encodeFunctionData, stringToHex, type Abi, type Hex } from 'viem'
 import { getSupportedChain } from './networks.js'
 
 /**
@@ -49,6 +49,11 @@ export interface WalletAdapter {
    * Resolves with the transaction hash; never signs with an embedded key.
    */
   sendTransaction(request: ContractWriteRequest): Promise<Hex>
+  /**
+   * Ask the connected wallet to sign a UTF-8 message with EIP-191 personal_sign
+   * and resolve with the 65-byte signature. Never requests a private key.
+   */
+  signMessage(account: Address, message: string): Promise<Hex>
   /** True when a compatible EIP-1193 provider is available in the browser. */
   isAvailable(): boolean
 }
@@ -193,6 +198,20 @@ export function createBrowserWalletAdapter(): WalletAdapter {
           }
         }
         throw new NetworkSwitchError(err instanceof Error ? err.message : String(err))
+      }
+    },
+
+    async signMessage(account: Address, message: string): Promise<Hex> {
+      const provider = getProvider()
+      if (!provider) throw new WalletUnavailableError()
+      try {
+        const signature = await provider.request({
+          method: 'personal_sign',
+          params: [stringToHex(message), account],
+        })
+        return signature as Hex
+      } catch (err: unknown) {
+        throw normalizeWalletError(err)
       }
     },
 

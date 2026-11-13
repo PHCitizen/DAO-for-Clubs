@@ -22,6 +22,7 @@ test('application funding validates deployment and amounts, tracks transactions 
       connect: async () => f.accounts[1], disconnect: async () => {}, getAccount: async () => f.accounts[1],
       getChainId: async () => 31337, isAvailable: () => true, switchChain: async () => {},
       onAccountChanged: () => () => {}, onChainChanged: () => () => {},
+      signMessage: async () => { throw new Error('signMessage is not used in this test') },
       sendTransaction: async (tx) => {
         if (mode === 'reject') throw Object.assign(new Error('Rejected'), { code: 4001 })
         if (mode === 'fail') throw new Error('Transaction failed')

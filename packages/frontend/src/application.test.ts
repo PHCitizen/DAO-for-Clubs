@@ -66,6 +66,7 @@ function makeAdapter(overrides?: Partial<WalletAdapter>): ControlledAdapter {
 
   const defaults: WalletAdapter = {
     isAvailable: () => true,
+    signMessage: vi.fn().mockResolvedValue('0x'),
     connect: vi.fn().mockResolvedValue('0xABCDEF0123456789ABCDEF0123456789ABCDEF01' as `0x${string}`),
     disconnect: vi.fn().mockResolvedValue(undefined),
     getAccount: vi.fn().mockResolvedValue(null),
