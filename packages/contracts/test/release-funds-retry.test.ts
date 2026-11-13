@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { network } from 'hardhat'
-import { encodeFunctionData, getContract, type Address, type Hex } from 'viem'
+import { encodeFunctionData, getContract, toFunctionSelector, type Address, type Hex } from 'viem'
 import { createApplication } from '../../frontend/src/application.ts'
 import { deployTestFixture, loadArtifact } from './fixtures.js'
 
 const UNIT = 10n ** 18n
-const MODE = { Revert: 0, Reenter: 2 } as const
+const MODE = { Revert: 0, Reenter: 2, Accept: 3 } as const
 
 type Connection = Awaited<ReturnType<typeof network.create>>
 
@@ -127,40 +127,112 @@ test('retry after a funding shortage: replenish, no new vote, even after vote cl
   } finally { await connection.close() }
 })
 
+/** A DAO over a funding asset that reports a controllable balance and misbehaves on `transfer`; one passed 40-unit proposal by wallet 1. */
+async function misbehavingSetup(connection: Connection) {
+  const f = await deployTestFixture(connection.provider as any)
+  const tokenArtifact = await loadArtifact('MisbehavingFundingToken', 'test-doubles/MisbehavingFundingToken.sol')
+  const mine = async (hash: Promise<Hex>) => f.publicClient.waitForTransactionReceipt({ hash: await hash })
+  const deploy = async (abi: any, bytecode: Hex, args: unknown[]) =>
+    (await f.publicClient.waitForTransactionReceipt({ hash: await f.walletClients[0].deployContract({ abi, bytecode, args } as any) })).contractAddress!
+  const tokenAddress = await deploy(tokenArtifact.abi, tokenArtifact.bytecode, [])
+  const daoAddress = await deploy(f.daoArtifact.abi, f.daoArtifact.bytecode, [tokenAddress])
+  const dao = (wallet: number) => getContract({ address: daoAddress, abi: f.daoArtifact.abi, client: { public: f.publicClient, wallet: f.walletClients[wallet] } })
+  const token = getContract({ address: tokenAddress, abi: tokenArtifact.abi, client: { public: f.publicClient, wallet: f.walletClients[0] } })
+  const creator = 1, voter = 3, stranger = 4
+  await mine(dao(0).write.createTreasury())
+  const treasury = (await dao(0).read.getTreasuries() as Address[]).at(-1)!
+  const membership = getContract({ address: treasury, abi: f.treasuryArtifact.abi, client: { public: f.publicClient, wallet: f.walletClients[0] } })
+  await mine(membership.write.mintVotingNft([f.accounts[voter]]))
+  const deadline = (await f.publicClient.getBlock()).timestamp + 3600n
+  await mine(dao(creator).write.createProposal([treasury, 40n * UNIT, deadline, 'ipfs://document']))
+  const id = await dao(0).read.proposalCount() as bigint
+  await mine(dao(voter).write.voteYes([id, 1n]))
+  const app = appFor(connection, f, f.accounts[creator], tokenAddress, daoAddress)
+  await app.connect()
+  const state = async () => { const r = await app.readFunding(id); return r.status === 'success' ? r.funding.state : r.status }
+  const paymentEvents = async (blockNumber: bigint) => (await dao(0).getEvents.FundsReleased({}, { fromBlock: blockNumber, toBlock: blockNumber })).length
+  return { f, mine, dao, token, creator, stranger, id, daoAddress, app, state, paymentEvents }
+}
+
 test('a failed asset transfer is payment-failed, distinct from a shortage, and a retry can still pay', async () => {
   const connection = await network.create('default')
   try {
-    const f = await deployTestFixture(connection.provider as any)
-    const tokenArtifact = await loadArtifact('MisbehavingFundingToken', 'test-doubles/MisbehavingFundingToken.sol')
-    const mine = async (hash: Promise<Hex>) => f.publicClient.waitForTransactionReceipt({ hash: await hash })
-    const deploy = async (abi: any, bytecode: Hex, args: unknown[]) =>
-      (await f.publicClient.waitForTransactionReceipt({ hash: await f.walletClients[0].deployContract({ abi, bytecode, args } as any) })).contractAddress!
-    const tokenAddress = await deploy(tokenArtifact.abi, tokenArtifact.bytecode, [])
-    const daoAddress = await deploy(f.daoArtifact.abi, f.daoArtifact.bytecode, [tokenAddress])
-    const dao = (wallet: number) => getContract({ address: daoAddress, abi: f.daoArtifact.abi, client: { public: f.publicClient, wallet: f.walletClients[wallet] } })
-    const token = getContract({ address: tokenAddress, abi: tokenArtifact.abi, client: { public: f.publicClient, wallet: f.walletClients[0] } })
-    const creator = 1, voter = 3
-    await mine(dao(0).write.createTreasury())
-    const treasury = (await dao(0).read.getTreasuries() as Address[]).at(-1)!
-    const membership = getContract({ address: treasury, abi: f.treasuryArtifact.abi, client: { public: f.publicClient, wallet: f.walletClients[0] } })
-    await mine(membership.write.mintVotingNft([f.accounts[voter]]))
-    const deadline = (await f.publicClient.getBlock()).timestamp + 3600n
-    await mine(dao(creator).write.createProposal([treasury, 40n * UNIT, deadline, 'ipfs://document']))
-    const id = await dao(0).read.proposalCount() as bigint
-    await mine(dao(voter).write.voteYes([id, 1n]))
-    const app = appFor(connection, f, f.accounts[creator], tokenAddress, daoAddress)
-    await app.connect()
-    const state = async () => { const r = await app.readFunding(id); return r.status === 'success' ? r.funding.state : r.status }
-
+    const { mine, dao, token, id, daoAddress, app, state } = await misbehavingSetup(connection)
     assert.equal(await state(), 'payment-pending')
     await mine(token.write.configure([MODE.Revert, daoAddress, id]))
     assert.equal((await app.releaseFunds(id)).status, 'funds-pending')
     assert.equal(await state(), 'payment-failed')
     assert.equal(await dao(0).read.fundsReleased([id]), false)
 
-    // The asset recovers (re-entry with an unknown proposal id is rejected harmlessly); the same proposal pays.
-    await mine(token.write.configure([MODE.Reenter, daoAddress, 0n]))
+    await mine(token.write.configure([MODE.Accept, daoAddress, id]))
     assert.equal((await app.releaseFunds(id)).status, 'confirmed')
     assert.equal(await state(), 'paid')
+  } finally { await connection.close() }
+})
+
+test('failure, then a shortage, then replenishment and a successful retry', async () => {
+  const connection = await network.create('default')
+  try {
+    const { mine, dao, token, id, daoAddress, app, state } = await misbehavingSetup(connection)
+    await mine(token.write.configure([MODE.Revert, daoAddress, id]))
+    assert.equal((await app.releaseFunds(id)).status, 'funds-pending')
+    assert.equal(await state(), 'payment-failed')
+    assert.equal(await dao(0).read.paymentFailed([id]), true)
+
+    // Other spending lowers the balance below the amount: a shortage now, whatever the earlier failure was.
+    await mine(token.write.setReportedBalance([10n * UNIT]))
+    assert.equal(await state(), 'passed-awaiting-funds')
+    const short = await app.releaseFunds(id)
+    assert.equal(short.status, 'funds-pending')
+    assert.match(short.message, /treasury balance is insufficient/)
+    assert.equal(await state(), 'passed-awaiting-funds')
+    assert.equal(await dao(0).read.paymentFailed([id]), false, 'the latest attempt was a shortage, not a refused transfer')
+
+    // Replenished and the asset works again: fundable, and the retry pays once.
+    await mine(token.write.setReportedBalance([100n * UNIT]))
+    await mine(token.write.configure([MODE.Accept, daoAddress, id]))
+    assert.equal(await state(), 'payment-pending')
+    assert.equal((await app.releaseFunds(id)).status, 'confirmed')
+    assert.equal(await state(), 'paid')
+    assert.equal((await app.releaseFunds(id)).status, 'transaction-failed')
+  } finally { await connection.close() }
+})
+
+test('only the creator may retry after a failed transfer', async () => {
+  const connection = await network.create('default')
+  try {
+    const { f, mine, dao, token, creator, stranger, id, daoAddress, app, state } = await misbehavingSetup(connection)
+    await mine(token.write.configure([MODE.Revert, daoAddress, id]))
+    assert.equal((await app.releaseFunds(id)).status, 'funds-pending')
+    await mine(token.write.configure([MODE.Accept, daoAddress, id]))
+
+    await assert.rejects(dao(stranger).simulate.releaseFunds([id], { account: f.accounts[stranger] }), /NotProposalCreator/)
+    await assert.rejects(dao(0).simulate.releaseFunds([id], { account: f.accounts[0] }), /NotProposalCreator/)
+    assert.equal(await dao(0).read.fundsReleased([id]), false)
+    assert.equal(await state(), 'payment-failed')
+
+    const receipt = await mine(dao(creator).write.releaseFunds([id]))
+    assert.equal(receipt.status, 'success')
+    assert.equal(await dao(0).read.fundsReleased([id]), true)
+  } finally { await connection.close() }
+})
+
+test('re-entering releaseFunds during a retry after a failed transfer cannot pay twice', async () => {
+  const connection = await network.create('default')
+  try {
+    const { f, mine, dao, token, creator, id, daoAddress, paymentEvents } = await misbehavingSetup(connection)
+    await mine(token.write.configure([MODE.Revert, daoAddress, id]))
+    await mine(dao(creator).write.releaseFunds([id]))
+    assert.equal(await dao(0).read.paymentFailed([id]), true)
+
+    // The asset now accepts the transfer but re-enters the DAO for this very proposal.
+    await mine(token.write.configure([MODE.Reenter, daoAddress, id]))
+    const receipt = await mine(dao(creator).write.releaseFunds([id]))
+    assert.equal(await token.read.reentrySucceeded(), false)
+    assert.equal(await token.read.reentryRevertData(), toFunctionSelector('ReentrantCall()'))
+    assert.equal(await paymentEvents(receipt.blockNumber), 1)
+    assert.equal(await dao(0).read.fundsReleased([id]), true)
+    assert.equal(await dao(0).read.paymentFailed([id]), false)
+    await assert.rejects(dao(creator).simulate.releaseFunds([id], { account: f.accounts[creator] }), /FundsAlreadyReleased/)
   } finally { await connection.close() }
 })

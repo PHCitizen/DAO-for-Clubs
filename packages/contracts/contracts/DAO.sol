@@ -68,7 +68,7 @@ contract DAO {
 
     /// True once a proposal's fixed allocation has actually been paid; set exactly once.
     mapping(uint256 => bool) public fundsReleased;
-    /// True while the latest release attempt had sufficient balance but the asset refused the transfer; cleared by a successful payment.
+    /// True only while the latest release attempt had sufficient balance but the asset refused the transfer; cleared by a later shortage or a successful payment.
     mapping(uint256 => bool) public paymentFailed;
     bool private _releasing;
 
@@ -267,6 +267,8 @@ contract DAO {
 
         uint256 available = IERC20Token(testUsd).balanceOf(proposal.treasury);
         if (available < proposal.amount) {
+            // The latest attempt is a shortage, not a refused transfer: no stale failure state.
+            paymentFailed[proposalId] = false;
             emit FundingShortage(proposalId, available, proposal.amount);
             return false;
         }

@@ -61,6 +61,7 @@ test('readFunding returns display-ready text and whether release is offered, per
     [{ passed: true, paid: false, balance: AMOUNT - 1n }, 'passed-awaiting-funds', 'Passed; awaiting funds: the treasury balance is below the amount. Retry after it is replenished.', true],
     [{ passed: true, paid: false, balance: AMOUNT }, 'payment-pending', 'Passed; the treasury can currently cover the amount, but it is not yet paid. Passing does not reserve funds.', true],
     [{ passed: true, paid: false, balance: AMOUNT, paymentFailed: true }, 'payment-failed', 'Passed; the last payment attempt failed because the funding asset refused the transfer. Retry is possible.', true],
+    [{ passed: true, paid: false, balance: AMOUNT - 1n, paymentFailed: true }, 'passed-awaiting-funds', 'Passed; awaiting funds: the treasury balance is below the amount. Retry after it is replenished.', true],
     [{ passed: true, paid: true }, 'paid', 'Paid: funds were sent to the fixed recipient.', false],
   ] as const
   for (const [chain, state, statusText, canRelease] of states) {

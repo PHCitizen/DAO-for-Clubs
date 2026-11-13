@@ -31,19 +31,23 @@ const FUNDING_STATE_TEXT: Record<ProposalFunding['state'], string> = {
   paid: 'Paid: funds were sent to the fixed recipient.',
 }
 
+/** States in which the creator's release request is offered; a new state is not releasable until added here. */
+const RETRYABLE_STATES: ReadonlySet<ProposalFunding['state']> =
+  new Set(['passed-awaiting-funds', 'payment-pending', 'payment-failed'])
+
 /** What a funding read looks like to a user: status line and whether the release action is offered. */
 export function describeFunding(funding: ProposalFunding): { statusText: string; canRelease: boolean } {
-  return { statusText: FUNDING_STATE_TEXT[funding.state], canRelease: funding.state !== 'not-passed' && funding.state !== 'paid' }
+  return { statusText: FUNDING_STATE_TEXT[funding.state], canRelease: RETRYABLE_STATES.has(funding.state) }
 }
 
 export type ReleaseOutcome = 'confirmed' | 'funds-pending'
-export type FundsPendingReason = 'insufficient-balance' | 'transfer-refused'
+export type FundsPendingReason = 'insufficient-balance' | 'payment-failed'
 
 export const CHAIN_MISMATCH_MESSAGE = 'Wallet and deployment chains must match.'
 
 export function describeReleaseOutcome(outcome: ReleaseOutcome, hash: Hex, reason?: FundsPendingReason): string {
   if (outcome === 'confirmed') return `Payment confirmed: ${hash}`
-  const cause = reason === 'transfer-refused'
+  const cause = reason === 'payment-failed'
     ? 'the funding asset refused the transfer'
     : 'the treasury balance is insufficient'
   return `Not paid: ${cause}. Passing is kept; retry when it is resolved. (${hash})`
@@ -75,7 +79,7 @@ export async function readProposalFunding(
   const terms = await readProposalTerms(chain, config, proposalId)
   if (terms === null) return null
   const read = <T>(functionName: string) => readDao<T>(chain, config, functionName, proposalId)
-  const [passingRecorded, paid, transferRefused, treasuryBalance] = await Promise.all([
+  const [passingRecorded, paid, paymentFailed, treasuryBalance] = await Promise.all([
     readPassingRecorded(chain, config, proposalId),
     read<boolean>('fundsReleased'),
     read<boolean>('paymentFailed'),
@@ -83,8 +87,8 @@ export async function readProposalFunding(
   ])
   const state: ProposalFunding['state'] = paid ? 'paid'
     : !passingRecorded ? 'not-passed'
-    : transferRefused ? 'payment-failed'
-    : treasuryBalance < terms.amount ? 'passed-awaiting-funds' : 'payment-pending'
+    : treasuryBalance < terms.amount ? 'passed-awaiting-funds'
+    : paymentFailed ? 'payment-failed' : 'payment-pending'
   return { proposalId, amount: terms.amount, recipient: terms.payoutRecipient, state }
 }
 
@@ -138,7 +142,7 @@ export async function releaseProposalFunds(
     : emitted('FundingShortage') || emitted('FundsTransferFailed') ? 'funds-pending' : null
   if (status === null) throw new FundReleaseConfirmationError('No matching release or funding-shortage event was found in the receipt.', hash)
   const reason: FundsPendingReason | undefined = status === 'funds-pending'
-    ? (emitted('FundsTransferFailed') ? 'transfer-refused' : 'insufficient-balance') : undefined
+    ? (emitted('FundsTransferFailed') ? 'payment-failed' : 'insufficient-balance') : undefined
   // A failed refresh must not change what the receipt already established.
   try {
     return { status, hash, reason, funding: await readProposalFunding(chain, config, input.proposalId) }
