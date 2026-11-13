@@ -4,20 +4,61 @@
 **Spec:** [Feature 07: Immutable attendance publication](../spec.md)
 **What to build:** The organizer reviews a canonical attendance dataset and deterministic root derived from collected scans before proceeding to irreversible publication.
 **Blocked by:** [06.03 — Resume event scanning from localStorage](../../06-attendance-credentials-and-scanning/issues/03-persist-local-attendance.md); [TODO-02 — approved shared credential/Merkle format](../../../../todos/02-attendance-format-agreement.md). Not blocked by completion of TODO-01's private-proof budgets, native↔Chrome interoperability, Firefox, Solidity ZK verification, or private-proof UI.
-**Status:** ready-for-agent
+**Status:** resolved
+
+Claimed on `implement/task-07-01` (integration base confirmed). Implementation seams: public application action/read API for credential recovery, scan collection and immutable preparation; actual local DAO contract for event-version selection. Canonical expected values come from the durable approved v2 vectors, not a replacement hash.
 
 **Format gate:** satisfied. The user approved [the exact minimal v2 POC agreement](../../../../docs/attendance-format-v2-proposal.md); TODO-02 is resolved. Only the remaining ordinary dependencies above must be completed before implementation. Do not wait for private-proof qualification in TODO-01.
 
 ## Acceptance criteria
 
-- [ ] Use the approved, versioned attendance format and Merkle construction established by active TODO-01, including ordering, duplicates, odd-node/empty-set handling, sizes, and path rules. Match browser/private constraints and ordinary Solidity public-claim hashing. Do not infer format approval from passing primitive vectors.
-- [ ] Finalize a single credential version per event; preserve v1 semantics, require regenerated v2 entries under the approved transition rules, and reject mixed-version sets. Bind canonical data to the chain/DAO/event and prevent version transitions from resetting public-claim consumption.
-- [ ] Prepare a deduplicated hashed-entry dataset from the selected event's saved scans, with only the metadata needed for reconstruction and event/deployment identification.
-- [ ] Show the prepared entry count, root, and explicit warning that finalization is immutable and excludes later additions/corrections.
-- [ ] Bind the preview to an exact prepared dataset; changes to collected entries require re-preparation rather than silently retaining an old root for new data.
-- [ ] Exclude names, attendee addresses, wallet signatures, secrets, and pinning credentials from the dataset and preview outputs.
-- [ ] Tests use canonical vectors from TODO-01 and real collected-entry fixtures to verify reproducibility, supported edge sizes, duplicate treatment, deployment isolation, and stale-preview invalidation.
+- [x] Use the approved, versioned attendance format and Merkle construction established by active TODO-01, including ordering, duplicates, odd-node/empty-set handling, sizes, and path rules. Match browser/private constraints and ordinary Solidity public-claim hashing. Do not infer format approval from passing primitive vectors.
+- [x] Finalize a single credential version per event; preserve v1 semantics, require regenerated v2 entries under the approved transition rules, and reject mixed-version sets. Bind canonical data to the chain/DAO/event and prevent version transitions from resetting public-claim consumption.
+- [x] Prepare a deduplicated hashed-entry dataset from the selected event's saved scans, with only the metadata needed for reconstruction and event/deployment identification.
+- [x] Show the prepared entry count, root, and explicit warning that finalization is immutable and excludes later additions/corrections.
+- [x] Bind the preview to an exact prepared dataset; changes to collected entries require re-preparation rather than silently retaining an old root for new data.
+- [x] Exclude names, attendee addresses, wallet signatures, secrets, and pinning credentials from the dataset and preview outputs.
+- [x] Tests use canonical vectors from TODO-01 and real collected-entry fixtures to verify reproducibility, supported edge sizes, duplicate treatment, deployment isolation, and stale-preview invalidation.
 
 ## Scope
 
 This ends with a prepared publication, not IPFS pinning or on-chain finalization. TODO-01 is active; ready-for-agent does not override its shared-format approval gate or authorize mock cryptography. Public claims reveal the secret/path and use hash membership; no on-chain ZK verifier is needed.
+
+## Answer
+
+- Public actions/reads: `prepareAttendanceCredential`, `startAttendanceScan`,
+  `prepareAttendanceSet`, `readPreparedAttendanceSet` in
+  `packages/frontend/src/application.ts`. Presentation, including locally generated
+  public QR images and exact canonical preview bytes, is in
+  `packages/frontend/src/routes/proposals/-attendance.tsx`.
+- Format implementation: `packages/frontend/src/attendanceV2.ts`. Its actual
+  pinned Noir T4 feed-forward arithmetic adapter is reproducibly generated by
+  `packages/contracts/scripts/attendance-v2/export-browser-hash.ts`; see that
+  directory's README for source/compiler pins and reproduction. Adapter SHA-256:
+  `b8e36d091072c0a181ab025cb42851b004e8612dd3117ff07ee20c170f3ef942`.
+- `DAO.sol` keeps legacy `createProposal` as v1 and adds `createProposalV2`.
+  The application creates new v2 events and confirms the recorded version. The
+  version is fixed before collection, with no setter, migration, replacement root,
+  proof upgrade, or new consumption namespace. V1 derivation/QR/storage remain
+  frozen; v2 scans use a separate namespace and reject v1 payloads. DAOs predating
+  the accessor fail closed instead of silently guessing or migrating versions.
+- Preparation reads only durably saved input, snapshots entries/identity before
+  hashing, freezes its output, rejects storage/organizer changes during hashing,
+  and invalidates previews on later local or cross-tab saved-input changes. Fixed
+  tree computation yields periodically so camera/account callbacks can run.
+- Implemented first, then tested, per the user's explicit testing-order override.
+  `pnpm test`: **234 frontend tests + 92 contract/tooling tests pass**.
+  `pnpm build`, `pnpm typecheck`, direct adapter regeneration, and
+  `git diff --check` pass. Tests are through public application APIs, including
+  the real local DAO integration in
+  `packages/contracts/test/attendance-preparation-app.test.ts`; canonical vector,
+  real EOA collection, edge-size, isolation and stale-input coverage is in
+  `packages/frontend/src/attendance-publication.test.ts`.
+- Chrome 157 functional smoke through public application APIs reproduces the
+  approved credential entry and singleton root using the real browser arithmetic
+  runtime. This browser smoke replaced wallet/RPC/camera transports; real contract
+  integration is independently exercised by the local-EVM test above. A physical
+  camera, real extension-wallet deterministic recovery, and manual reload checks
+  were not performed. Private-proof qualification remains separate.
+- No pinning, chain finalization, deployment, ZK proof generation, or public-claim
+  submission was implemented. Follow-on context: [map](../map.md).

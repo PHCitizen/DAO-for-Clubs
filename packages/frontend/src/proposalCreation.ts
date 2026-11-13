@@ -214,6 +214,8 @@ export interface CreateProposalInput {
   votingDeadline: number
   /** Prepared `ipfs://` reference for the pinned document. */
   documentReference: string
+  /** Legacy callers retain v1; the new-event UI explicitly selects v2. */
+  attendanceVersion?: 1 | 2
 }
 
 export type CreateProposalOutcome =
@@ -320,7 +322,7 @@ export async function createProposalOnChain(
       from: getAddress(input.from),
       address: config.daoAddress,
       abi: config.daoAbi,
-      functionName: 'createProposal',
+      functionName: input.attendanceVersion === 2 ? 'createProposalV2' : 'createProposal',
       args: [treasury, parsed.amount, deadline, input.documentReference],
     })
     hooks?.onSubmitted?.(hash)
@@ -370,6 +372,16 @@ export async function createProposalOnChain(
       'The recorded proposal terms do not match the requested creation.',
       hash
     )
+  }
+
+  if (input.attendanceVersion === 2) {
+    const version = Number(await chain.readContract({
+      address: config.daoAddress,
+      abi: config.daoAbi,
+      functionName: 'attendanceVersion',
+      args: [id],
+    }))
+    if (version !== 2) throw new ProposalConfirmationError('The new event did not record attendance credential version 2.', hash)
   }
 
   return {

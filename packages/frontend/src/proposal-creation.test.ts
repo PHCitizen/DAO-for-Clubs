@@ -60,6 +60,8 @@ function makeApp(outcome: ChainOutcome = 'success') {
     getBlockNumber: vi.fn(async () => 1n),
     readContract: vi.fn(async (request: { functionName: string; args?: readonly unknown[] }) => {
       switch (request.functionName) {
+        case 'attendanceVersion':
+          return 2
         case 'isTreasury': {
           const address = (request.args![0] as string).toLowerCase()
           return address === TREASURY_A.toLowerCase() || address === TREASURY_B.toLowerCase()
@@ -199,7 +201,7 @@ test('confirmed creation reports the assigned global ID and immutable terms', as
     expect.objectContaining({
       from: getAddress(CREATOR),
       to: DAO,
-      functionName: 'createProposal',
+      functionName: 'createProposalV2',
       args: [getAddress(TREASURY_A), 12_500_000_000_000_000_000n, BigInt(DEADLINE), `ipfs://${CID}`],
     })
   )

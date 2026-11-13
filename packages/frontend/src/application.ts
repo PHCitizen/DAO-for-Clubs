@@ -10,7 +10,7 @@ import {
   FundReleaseSubmissionError, FundReleaseRevertedError, FundReleaseConfirmationError,
   type ProposalFunding,
 } from './release.js'
-import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, type Hash, type Hex } from 'viem'
+import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, parseAbi, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
   type Address,
@@ -100,6 +100,7 @@ import {
   type CameraScanner,
 } from './attendanceScan.js'
 import { createAttendanceStore, type AttendanceStorage } from './attendanceStorage.js'
+import { attendanceV2SigningMessage, deriveAttendanceV2Credential, encodeAttendanceV2Qr, prepareAttendanceV2Set, type PreparedAttendanceSet } from './attendanceV2.js'
 import {
   type IpfsCredentials,
   type IpfsTransport,
@@ -745,6 +746,7 @@ export type AttendanceCredentialResult =
         | 'stale-configuration'
         | 'invalid-proposal-id'
         | 'signing-failed'
+        | 'read-failed'
       message: string
     }
 
@@ -941,6 +943,35 @@ export function createApplication(
   // In-session collections keyed by deployment and proposal; persistence is a later slice.
   const attendanceCollections = new Map<string, AttendanceCollection>()
   const activeScans = new Map<string, AttendanceScanSession>()
+  const attendancePreviews = new Map<string, { source: string; set: PreparedAttendanceSet }>()
+  const attendancePreparationRevisions = new Map<string, number>()
+
+  function savedAttendanceSource(event: AttendanceEvent): string | null {
+    const saved = createAttendanceStore(options.attendanceStorage, event).load()
+    return saved.state.status === 'saved' || saved.state.status === 'empty' ? JSON.stringify(saved.entries) : null
+  }
+
+  async function readAttendanceEvent(proposalId: bigint): Promise<AttendanceEvent> {
+    if (!isAttendanceProposalId(proposalId) || !rpc?.readContract || !deploymentContext.daoAddress) throw new Error('Attendance deployment unavailable.')
+    if (await rpc.getChainId() !== deploymentContext.chainId) throw new Error('Attendance RPC chain mismatch.')
+    const version = Number(await rpc.readContract({
+      address: deploymentContext.daoAddress,
+      abi: parseAbi(['function attendanceVersion(uint256 proposalId) view returns (uint8)']),
+      functionName: 'attendanceVersion', args: [proposalId],
+    }))
+    if (version !== 1 && version !== 2) throw new Error('Unsupported event credential version.')
+    return { chainId: deploymentContext.chainId, daoAddress: deploymentContext.daoAddress, proposalId, ...(version === 2 ? { credentialVersion: 2 as const } : {}) }
+  }
+
+  function attendanceCollection(event: AttendanceEvent): AttendanceCollection {
+    const key = attendanceEventKey(event)
+    let collection = attendanceCollections.get(key)
+    if (!collection) {
+      collection = createAttendanceCollection(event, createAttendanceStore(options.attendanceStorage, event))
+      attendanceCollections.set(key, collection)
+    }
+    return collection
+  }
 
   const publicAbis = publicArtifacts.abis as unknown as TreasuryAbis
 
@@ -1700,6 +1731,7 @@ export function createApplication(
             amount: request.amount,
             votingDeadline: request.votingDeadline,
             documentReference,
+            attendanceVersion: 2,
           },
           { onSubmitted: (hash) => emitProposalCreation({ status: 'pending', hash }) }
         )
@@ -2351,13 +2383,19 @@ export function createApplication(
         throw error
       }
 
-      const { account, chainId, targetAddress } = prepared.context
-      const event: AttendanceEvent = { chainId, daoAddress: targetAddress, proposalId: request.proposalId }
+      const { account } = prepared.context
+      let event: AttendanceEvent
+      try { event = await readAttendanceEvent(request.proposalId) }
+      catch { return { status: 'read-failed', message: 'The immutable event credential version could not be read. No credential was generated.' } }
       try {
-        const signature = await adapter.signMessage(account, attendanceSigningMessage(event))
         prepared.assertValid()
-        const { entry } = deriveAttendanceCredential(signature, event.proposalId)
-        return { status: 'ready', ...event, entry, qr: encodeAttendanceQr({ ...event, entry }) }
+        const signature = await adapter.signMessage(account, event.credentialVersion === 2 ? attendanceV2SigningMessage(event) : attendanceSigningMessage(event))
+        prepared.assertValid()
+        const entry = event.credentialVersion === 2
+          ? await deriveAttendanceV2Credential(event, account, signature)
+          : deriveAttendanceCredential(signature, event.proposalId).entry
+        prepared.assertValid()
+        return { status: 'ready', ...event, entry, qr: event.credentialVersion === 2 ? encodeAttendanceV2Qr(event, entry) : encodeAttendanceQr({ ...event, entry }) }
       } catch (error) {
         if (error instanceof StaleActionConfigurationError) {
           return { status: 'stale-configuration', message: error.message }
@@ -2401,17 +2439,11 @@ export function createApplication(
         return { status: 'camera-unavailable', message: new CameraError('unavailable').message }
       }
 
-      const event: AttendanceEvent = {
-        chainId: proposalConfig.chainId,
-        daoAddress: proposalConfig.daoAddress,
-        proposalId: request.proposalId,
-      }
+      let event: AttendanceEvent
+      try { event = await readAttendanceEvent(request.proposalId) }
+      catch { return { status: 'read-failed', message: 'The immutable event credential version could not be read.' } }
       const key = attendanceEventKey(event)
-      let collection = attendanceCollections.get(key)
-      if (!collection) {
-        collection = createAttendanceCollection(event, createAttendanceStore(options.attendanceStorage, event))
-        attendanceCollections.set(key, collection)
-      }
+      const collection = attendanceCollection(event)
       const creator = proposal.creator.toLowerCase()
       let session: AttendanceScanSession
       try {
@@ -2432,6 +2464,52 @@ export function createApplication(
       activeScans.set(key, session)
       session.onStop(() => { if (activeScans.get(key) === session) activeScans.delete(key) })
       return { status: 'scanning', session }
+    },
+
+    /** No camera, pinning or transaction required; only durable saved scans. */
+    async prepareAttendanceSet(request: { proposalId: bigint }): Promise<
+      | { status: 'prepared'; set: PreparedAttendanceSet }
+      | { status: 'unavailable' | 'unsupported-version' | 'not-organizer' | 'unsaved' | 'stale' | 'invalid'; message: string }
+    > {
+      if (!proposalChain || !proposalConfig || walletState.status !== 'connected') return { status: 'unavailable', message: 'Connect the organizer wallet to a configured deployment.' }
+      const account = walletState.account
+      try {
+        const prepared = await this.prepareDeploymentAction({ target: 'dao' })
+        const [event, proposal] = await Promise.all([readAttendanceEvent(request.proposalId), readProposalTerms(proposalChain, proposalConfig, request.proposalId)])
+        prepared.assertValid()
+        if (!proposal || proposal.creator.toLowerCase() !== account.toLowerCase()) return { status: 'not-organizer', message: 'Only the proposal creator can prepare attendance.' }
+        if (event.credentialVersion !== 2) return { status: 'unsupported-version', message: 'This is a frozen v1 event. Only newly created v2 events support this format; regenerate credentials for a new v2 event.' }
+        const collection = attendanceCollection(event)
+        const initial = collection.read()
+        if (initial.storage.status !== 'saved' && initial.storage.status !== 'empty') return { status: 'unsaved', message: 'Resolve browser storage errors before preparing attendance.' }
+        const source = JSON.stringify(initial.entries)
+        const key = attendanceEventKey(event)
+        attendancePreviews.delete(key)
+        if (source !== savedAttendanceSource(event)) return { status: 'unsaved', message: 'Saved attendance changed or is unavailable. Reload the event before preparing.' }
+        const revision = (attendancePreparationRevisions.get(key) ?? 0) + 1
+        attendancePreparationRevisions.set(key, revision)
+        const set = await prepareAttendanceV2Set(event, initial.entries)
+        prepared.assertValid()
+        if (attendancePreparationRevisions.get(key) !== revision || source !== savedAttendanceSource(event) || source !== JSON.stringify(collection.read().entries)) return { status: 'stale', message: 'The organizer or collected entries changed. Prepare attendance again.' }
+        attendancePreviews.set(key, { source, set })
+        return { status: 'prepared', set }
+      } catch (error) {
+        return { status: 'invalid', message: error instanceof Error ? error.message : 'Attendance preparation failed.' }
+      }
+    },
+
+    /** A changed collection invalidates its preview, never silently updates it. */
+    readPreparedAttendanceSet(request: { proposalId: bigint }): { status: 'prepared'; set: PreparedAttendanceSet } | { status: 'not-prepared' | 'stale' } {
+      if (!deploymentContext.daoAddress) return { status: 'not-prepared' }
+      const event: AttendanceEvent = { chainId: deploymentContext.chainId, daoAddress: deploymentContext.daoAddress, proposalId: request.proposalId, credentialVersion: 2 }
+      const key = attendanceEventKey(event)
+      const preview = attendancePreviews.get(key)
+      if (!preview) return { status: 'not-prepared' }
+      if (preview.source !== savedAttendanceSource(event) || preview.source !== JSON.stringify(attendanceCollections.get(key)?.read().entries)) {
+        attendancePreviews.delete(key)
+        return { status: 'stale' }
+      }
+      return { status: 'prepared', set: preview.set }
     },
 
     /**

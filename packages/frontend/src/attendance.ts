@@ -19,11 +19,13 @@ export interface AttendanceEvent {
   chainId: number
   daoAddress: Address
   proposalId: bigint
+  credentialVersion?: 1 | 2
 }
 
 /** Canonical identity of an event: addresses compare case-insensitively. */
 export function attendanceEventKey(event: AttendanceEvent): string {
-  return `${event.chainId}:${event.daoAddress.toLowerCase()}:${event.proposalId}`
+  const key = `${event.chainId}:${event.daoAddress.toLowerCase()}:${event.proposalId}`
+  return event.credentialVersion === 2 ? `${key}:v2` : key
 }
 
 export function sameAttendanceEvent(a: AttendanceEvent, b: AttendanceEvent): boolean {
