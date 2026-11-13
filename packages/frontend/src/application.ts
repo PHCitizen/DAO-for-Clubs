@@ -81,6 +81,14 @@ import {
   isAttendanceProposalId,
 } from './attendance.js'
 import {
+  CameraError,
+  createAttendanceCollection,
+  type AttendanceCollection,
+  type AttendanceCollectionView,
+  type CameraScanner,
+  type ScanResult,
+} from './attendanceScan.js'
+import {
   type IpfsCredentials,
   type IpfsTransport,
   formatIpfsReference,
@@ -680,6 +688,35 @@ export type ProposalPinResult =
   /** Uploaded bytes belong to an older draft; the current draft is not pinned. */
   | { status: 'draft-changed-during-upload'; message: string; pin: ProposalPin }
 
+export interface StartAttendanceScanRequest {
+  proposalId: bigint
+}
+
+export type ScanListener = (result: ScanResult) => void
+
+/** An active organizer scan: the camera feeds the validated, deduplicated collection. */
+export interface AttendanceScanSession {
+  read(): AttendanceCollectionView
+  onScan(listener: ScanListener): () => void
+  /** Stops the camera. Accepted entries stay in the collection. */
+  stop(): void
+}
+
+export type StartAttendanceScanResult =
+  | { status: 'scanning'; session: AttendanceScanSession }
+  | {
+      status:
+        | 'wallet-not-connected'
+        | 'unconfigured'
+        | 'invalid-proposal-id'
+        | 'not-found'
+        | 'not-organizer'
+        | 'camera-permission-denied'
+        | 'camera-unavailable'
+        | 'read-failed'
+      message: string
+    }
+
 export interface PrepareAttendanceCredentialRequest {
   proposalId: bigint
 }
@@ -701,6 +738,8 @@ export type AttendanceCredentialResult =
     }
 
 export interface ApplicationOptions {
+  /** Camera transport for organizer attendance scanning; omit when no camera exists. */
+  camera?: CameraScanner
   /** IPFS transport used for proposal pinning; omit to disable pinning. */
   ipfs?: IpfsTransport
 }
@@ -843,6 +882,9 @@ export function createApplication(
       // Ignored if invalid URL
     }
   }
+
+  // In-session collections keyed by deployment and proposal; persistence is a later slice.
+  const attendanceCollections = new Map<string, AttendanceCollection>()
 
   const publicAbis = publicArtifacts.abis as unknown as TreasuryAbis
 
@@ -2076,6 +2118,80 @@ export function createApplication(
           return { status: 'signing-failed', message: error.message }
         }
         return { status: 'signing-failed', message: 'The wallet could not sign the attendance message. Try again.' }
+      }
+    },
+
+    /**
+     * Organizer workflow: the proposal creator starts the camera and every
+     * decoded QR is validated and deduplicated into the event's collection. No
+     * attendee NFT, vote, payout, or chain transaction is involved.
+     */
+    async startAttendanceScan(request: StartAttendanceScanRequest): Promise<StartAttendanceScanResult> {
+      if (!isAttendanceProposalId(request.proposalId)) {
+        return { status: 'invalid-proposal-id', message: 'The proposal ID is not a valid unsigned 256-bit number.' }
+      }
+      if (walletState.status !== 'connected') {
+        return { status: 'wallet-not-connected', message: 'Connect the proposal creator wallet to scan attendance.' }
+      }
+      if (!proposalChain || !proposalConfig) {
+        return { status: 'unconfigured', message: 'Attendance scanning requires a configured DAO deployment and RPC endpoint.' }
+      }
+      let proposal: ProposalTerms | null
+      try {
+        proposal = await readProposalTerms(proposalChain, proposalConfig, request.proposalId)
+      } catch {
+        return { status: 'read-failed', message: 'The proposal could not be read. Check the network and try again.' }
+      }
+      if (proposal === null) return { status: 'not-found', message: 'This proposal does not exist in the configured DAO.' }
+      if (walletState.status !== 'connected' || proposal.creator.toLowerCase() !== walletState.account.toLowerCase()) {
+        return { status: 'not-organizer', message: 'Only the proposal creator can collect attendance for this event.' }
+      }
+      if (!options.camera) {
+        return { status: 'camera-unavailable', message: new CameraError('unavailable').message }
+      }
+
+      const event: AttendanceEvent = {
+        chainId: proposalConfig.chainId,
+        daoAddress: proposalConfig.daoAddress,
+        proposalId: request.proposalId,
+      }
+      const key = `${event.chainId}:${event.daoAddress.toLowerCase()}:${event.proposalId}`
+      let collection = attendanceCollections.get(key)
+      if (!collection) {
+        collection = createAttendanceCollection(event)
+        attendanceCollections.set(key, collection)
+      }
+      const active = collection
+      const listeners = new Set<ScanListener>()
+      let scanning = true
+      let handle: { stop(): void }
+      try {
+        handle = await options.camera.start(payload => {
+          if (!scanning) return
+          const result = active.submit(payload)
+          listeners.forEach(listener => listener(result))
+        })
+      } catch (error) {
+        const kind = error instanceof CameraError ? error.kind : 'unavailable'
+        return {
+          status: kind === 'permission-denied' ? 'camera-permission-denied' : 'camera-unavailable',
+          message: new CameraError(kind).message,
+        }
+      }
+      return {
+        status: 'scanning',
+        session: {
+          read: () => active.read(),
+          onScan(listener) {
+            listeners.add(listener)
+            return () => listeners.delete(listener)
+          },
+          stop() {
+            if (!scanning) return
+            scanning = false
+            handle.stop()
+          },
+        },
       }
     },
 

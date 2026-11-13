@@ -17,6 +17,7 @@ function fixture() {
     switchChain: async () => {}, onChainChanged: () => () => {},
     onAccountChanged: listener => { accountListener = listener; return () => {} },
     sendTransaction: vi.fn(async () => HASH),
+    signMessage: async () => { throw new Error('signing is not used by voting') },
   }
   const receipt = {
     status: 'success' as const, blockNumber: 1n,
