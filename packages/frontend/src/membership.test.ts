@@ -26,7 +26,8 @@ const TRANSFER_TOPIC =
 
 const DEPLOYMENT = { chainId: 31337, daoAddress: DAO } as const
 
-function key(address: string): string {
+/** Lowercases an address for case-insensitive map lookup. */
+function normalizeKey(address: string): string {
   return address.toLowerCase()
 }
 
@@ -46,31 +47,44 @@ function makeMembershipHarness(overrides: Partial<MembershipStubState> = {}) {
   const state: MembershipStubState = {
     chainId: 31337,
     connectedAccount: ADMIN_A,
-    treasuries: { [key(TREASURY_A)]: getAddress(ADMIN_A) },
-    memberships: { [key(TREASURY_A)]: {} },
+    treasuries: { [normalizeKey(TREASURY_A)]: getAddress(ADMIN_A) },
+    memberships: { [normalizeKey(TREASURY_A)]: {} },
     outcome: 'success',
     sent: [],
     ...overrides,
+  }
+
+  // Monotonic per-treasury token ID allocation, mirroring the contract's
+  // _nextTokenId: seeded above any pre-existing IDs and never reused.
+  const nextTokenIds = new Map<string, bigint>()
+  function allocateTokenId(treasury: string): bigint {
+    let next = nextTokenIds.get(treasury)
+    if (next === undefined) {
+      const seeded = Object.values(state.memberships[treasury] ?? {}).flat()
+      next = seeded.reduce((max, id) => (id > max ? id : max), 0n) + 1n
+    }
+    nextTokenIds.set(treasury, next + 1n)
+    return next
   }
 
   const rpc = {
     getChainId: vi.fn(async () => state.chainId),
     getBlockNumber: vi.fn(async () => 1n),
     readContract: vi.fn(async (request: ContractReadRequest): Promise<unknown> => {
-      const treasury = key(request.address)
+      const treasury = normalizeKey(request.address)
       const members = state.memberships[treasury] ?? {}
       const supply = Object.values(members).reduce((sum, tokens) => sum + BigInt(tokens.length), 0n)
       switch (request.functionName) {
         case 'isTreasury':
-          return key(request.args?.[0] as string) in state.treasuries
+          return normalizeKey(request.args?.[0] as string) in state.treasuries
         case 'administrator':
           return state.treasuries[treasury]
         case 'totalSupply':
           return supply
         case 'balanceOf':
-          return BigInt(members[key(request.args?.[0] as string)]?.length ?? 0)
+          return BigInt(members[normalizeKey(request.args?.[0] as string)]?.length ?? 0)
         case 'tokensOfHolder':
-          return members[key(request.args?.[0] as string)] ?? []
+          return members[normalizeKey(request.args?.[0] as string)] ?? []
         default:
           throw new Error(`Unexpected membership read: ${request.functionName}`)
       }
@@ -81,12 +95,11 @@ function makeMembershipHarness(overrides: Partial<MembershipStubState> = {}) {
       if (!last) throw new Error(`Unknown transaction ${hash}`)
       if (state.outcome === 'revert') return { status: 'reverted' as const, blockNumber: 123n, logs: [] }
 
-      const treasury = key(last.to)
+      const treasury = normalizeKey(last.to)
       const holder = getAddress(last.args[0] as string)
-      const tokens = (state.memberships[treasury] ??= {})[key(holder)] ??= []
-      const tokenId = BigInt(tokens.length === 0
-        ? Object.values(state.memberships[treasury]).reduce((sum, t) => sum + t.length, 0) + 1
-        : Number(tokens[tokens.length - 1]) + 1)
+      const members = (state.memberships[treasury] ??= {})
+      const tokens = (members[normalizeKey(holder)] ??= [])
+      const tokenId = allocateTokenId(treasury)
       tokens.push(tokenId)
       const mintLog: TestUsdTransactionLog = {
         address: getAddress(last.to),
@@ -129,7 +142,7 @@ function makeMembershipHarness(overrides: Partial<MembershipStubState> = {}) {
 
 test('a wallet-free holder inspects live supply and confirmed credential ownership', async () => {
   const { rpc } = makeMembershipHarness({
-    memberships: { [key(TREASURY_A)]: { [key(HOLDER)]: [1n, 2n], [key(OTHER_HOLDER)]: [3n] } },
+    memberships: { [normalizeKey(TREASURY_A)]: { [normalizeKey(HOLDER)]: [1n, 2n], [normalizeKey(OTHER_HOLDER)]: [3n] } },
   })
   const app = createApplication(undefined, rpc, DEPLOYMENT)
 
@@ -151,7 +164,7 @@ test('a wallet-free holder inspects live supply and confirmed credential ownersh
 
 test('live supply inspection does not require a holder address', async () => {
   const { rpc } = makeMembershipHarness({
-    memberships: { [key(TREASURY_A)]: { [key(HOLDER)]: [1n] } },
+    memberships: { [normalizeKey(TREASURY_A)]: { [normalizeKey(HOLDER)]: [1n] } },
   })
   const app = createApplication(undefined, rpc, DEPLOYMENT)
 
@@ -184,7 +197,7 @@ test('membership reads are unconfigured without a deployment or RPC seam', async
 
 test('the treasury administrator mints and sees the confirmed token ID, supply, and holder credentials', async () => {
   const { state, rpc, adapter } = makeMembershipHarness({
-    memberships: { [key(TREASURY_A)]: { [key(HOLDER)]: [1n] } },
+    memberships: { [normalizeKey(TREASURY_A)]: { [normalizeKey(HOLDER)]: [1n] } },
   })
   const app = createApplication(adapter, rpc, DEPLOYMENT)
   await app.connect()
@@ -230,8 +243,8 @@ test('a connected wallet that is not the treasury administrator gets unauthorize
 
 test('one treasury administrator cannot mint for another treasury', async () => {
   const { state, rpc, adapter } = makeMembershipHarness({
-    treasuries: { [key(TREASURY_A)]: getAddress(ADMIN_A), [key(TREASURY_B)]: getAddress(ADMIN_B) },
-    memberships: { [key(TREASURY_A)]: {}, [key(TREASURY_B)]: {} },
+    treasuries: { [normalizeKey(TREASURY_A)]: getAddress(ADMIN_A), [normalizeKey(TREASURY_B)]: getAddress(ADMIN_B) },
+    memberships: { [normalizeKey(TREASURY_A)]: {}, [normalizeKey(TREASURY_B)]: {} },
     connectedAccount: ADMIN_A,
   })
   const app = createApplication(adapter, rpc, DEPLOYMENT)

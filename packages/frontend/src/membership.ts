@@ -196,6 +196,11 @@ export interface MintVotingNftInput {
   from: Address
   treasury: string
   holder: string
+  /**
+   * Optional freshness guard re-asserted immediately before submission, so an
+   * account or network change during the pre-mint reads aborts the mint.
+   */
+  assertValid?: () => void
 }
 
 export type MintVotingNftOutcome =
@@ -300,6 +305,10 @@ export async function mintVotingNft(
       administrator,
     }
   }
+
+  // The reads above span several async round trips; re-assert that the
+  // prepared wallet/chain snapshot is still valid immediately before sending.
+  input.assertValid?.()
 
   let hash: Hex
   try {
