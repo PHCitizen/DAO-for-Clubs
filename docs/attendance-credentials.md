@@ -6,13 +6,12 @@ Implementation: `packages/frontend/src/attendance.ts`; action
 
 ## Frozen serialization
 
-This section describes existing **v1** behavior, not the proposed replacement.
-On 2026-11-13 the user approved investigating a new credential version with
-prover-appropriate secret/entry hashing, accepting regenerated QR entries.
-The prover, hash (including Poseidon2 as a candidate), parameters, encoding,
-and transition rules are not selected. Do not reinterpret v1 credentials or
-change their implementation until a replacement format is approved and tested.
-See `todos/01-transparent-zk-feasibility.md`.
+This section describes frozen **v1** behavior. The separate approved v2
+agreement is in [attendance-format-v2-proposal.md](attendance-format-v2-proposal.md).
+Implementation/verification pointers are in
+[ticket 07.01](../.scratch/07-attendance-publication/issues/01-prepare-attendance-set.md).
+The application reads the immutable event version before signing; v1 derivation
+and persisted v1 collections are not reinterpreted as v2.
 
 - Signing method: EIP-191 `personal_sign` over the UTF-8 message. The browser
   adapter sends the hex-encoded message and the account; no private key is ever

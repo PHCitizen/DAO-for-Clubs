@@ -53,6 +53,14 @@ contract DAO {
     uint256 public proposalCount;
     mapping(uint256 => Proposal) private _proposals;
 
+    // Set once during creation, before collection. No migration or setter.
+    mapping(uint256 => uint8) private _attendanceVersions;
+
+    function attendanceVersion(uint256 proposalId) external view returns (uint8) {
+        if (proposalId == 0 || proposalId > proposalCount) revert ProposalNotFound();
+        return _attendanceVersions[proposalId];
+    }
+
     struct VotingResult {
         uint256 yesVotes;
         uint256 noVotes;
@@ -155,12 +163,33 @@ contract DAO {
         uint256 votingDeadline,
         string calldata documentReference
     ) external returns (uint256 proposalId) {
+        return _createProposal(treasury, amount, votingDeadline, documentReference, 1);
+    }
+
+    /// @notice New v2 events only; existing v1 proposals cannot transition.
+    function createProposalV2(
+        address treasury,
+        uint256 amount,
+        uint256 votingDeadline,
+        string calldata documentReference
+    ) external returns (uint256 proposalId) {
+        return _createProposal(treasury, amount, votingDeadline, documentReference, 2);
+    }
+
+    function _createProposal(
+        address treasury,
+        uint256 amount,
+        uint256 votingDeadline,
+        string calldata documentReference,
+        uint8 version
+    ) private returns (uint256 proposalId) {
         if (!_isTreasury[treasury]) revert TreasuryNotRegistered();
         if (amount == 0) revert InvalidProposalAmount();
         if (votingDeadline <= block.timestamp) revert InvalidVotingDeadline();
         if (bytes(documentReference).length == 0) revert InvalidDocumentReference();
 
         proposalId = ++proposalCount;
+        _attendanceVersions[proposalId] = version;
         _proposals[proposalId] = Proposal({
             id: proposalId,
             treasury: treasury,

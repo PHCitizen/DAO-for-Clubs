@@ -40,9 +40,10 @@ function setup(options: {
     sendTransaction: vi.fn(),
     signMessage,
   } as unknown as WalletAdapter
-  // No chain reads are expected: credentials need no NFT, balance, or funding.
-  const readContract = vi.fn(async () => {
-    throw new Error('attendance preparation must not read contract state')
+  // Only immutable credential version is read: no NFT, balance or funding gate.
+  const readContract = vi.fn(async (request: { functionName: string }) => {
+    if (request.functionName === 'attendanceVersion') return 1
+    throw new Error('attendance preparation must not read unrelated contract state')
   })
   const rpc = { getChainId: vi.fn(async () => chainId), readContract } as unknown as RpcAdapter
   const app = createApplication(wallet, rpc, {
@@ -72,7 +73,7 @@ test('a connected attendee signs the frozen message and gets a QR with only publ
     proposalId: '1',
     entry: ENTRY,
   })
-  expect(readContract).not.toHaveBeenCalled()
+  expect(readContract).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ functionName: 'attendanceVersion', args: [1n] }))
   // Secret, signature, attendee address, and names never appear in outputs.
   const publicOutput = JSON.stringify(result, (_k, v) => (typeof v === 'bigint' ? v.toString() : v)).toLowerCase()
   for (const forbidden of [SECRET, SIGNATURE.slice(2), SIGNER.address.toLowerCase().slice(2)]) {

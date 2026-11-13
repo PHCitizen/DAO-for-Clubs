@@ -1,5 +1,6 @@
 import { isAddress, type Hex } from 'viem'
 import { attendanceEventKey, type AttendanceEvent } from './attendance.js'
+import { attendanceField } from './attendanceV2.js'
 
 /**
  * Local persistence for the organizer's attendance collection (spec 06.03).
@@ -48,7 +49,7 @@ function parseSaved(raw: string, event: AttendanceEvent): Hex[] | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   const { schema, chainId, dao, proposalId, entries } = value as Record<string, unknown>
   if (
-    schema !== SCHEMA ||
+    schema !== (event.credentialVersion ?? SCHEMA) ||
     chainId !== event.chainId ||
     typeof dao !== 'string' || !isAddress(dao, { strict: false }) || dao.toLowerCase() !== event.daoAddress.toLowerCase() ||
     proposalId !== event.proposalId.toString() ||
@@ -57,12 +58,15 @@ function parseSaved(raw: string, event: AttendanceEvent): Hex[] | null {
   ) return null
   // Duplicates mean the saved list was tampered with or damaged: do not hide it.
   if (new Set(entries).size !== entries.length) return null
+  if (event.credentialVersion === 2) {
+    try { entries.forEach(entry => attendanceField(entry as string)) } catch { return null }
+  }
   return entries as Hex[]
 }
 
 /** A store scoped to one chain ID, DAO address, and proposal ID. Without storage nothing persists. */
 export function createAttendanceStore(storage: AttendanceStorage | undefined, event: AttendanceEvent): AttendanceStore {
-  const key = KEY_PREFIX + attendanceEventKey(event)
+  const key = (event.credentialVersion === 2 ? 'dao-for-clubs:attendance:v2:' : KEY_PREFIX) + attendanceEventKey(event)
   const empty = (status: AttendanceStorageStatus) => ({ entries: [] as Hex[], state: storageState(status) })
   return {
     load() {
@@ -78,7 +82,7 @@ export function createAttendanceStore(storage: AttendanceStorage | undefined, ev
       if (!storage) return storageState('unavailable')
       try {
         storage.setItem(key, JSON.stringify({
-          schema: SCHEMA,
+          schema: event.credentialVersion ?? SCHEMA,
           chainId: event.chainId,
           dao: event.daoAddress.toLowerCase(),
           proposalId: event.proposalId.toString(),
