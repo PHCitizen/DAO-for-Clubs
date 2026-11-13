@@ -4,7 +4,7 @@
 **Spec:** [Feature 09: Opt-in public attendance claims](../spec.md)
 **What to build:** A credential holder explicitly consents to disclosing the secret and Merkle path for a permanent public wallet-event association, then prepares the membership witness locally. No ZK proof is required for public claiming.
 **Blocked by:** [07.04 — Retrieve and validate the attendance set](../../07-attendance-publication/issues/04-validate-attendance-data.md).
-**Status:** ready-for-agent
+**Status:** implemented (POC fixture; TODO-01 canonical-format and 07 publication gates remain)
 
 ## Acceptance criteria
 
@@ -23,3 +23,10 @@ Public hash-membership checks and private ZK share canonical credential/Merkle s
 ## Comments
 
 2026-11-13: Reconciled with the user-approved public secret/path disclosure design. Credential copying and first-claim front-running are accepted weaknesses; duplicate public claims after consumption remain forbidden.
+
+### Implementation — 2026-11-13
+- `attendanceMerkle.ts` (sorted-pair keccak256 Merkle, mirrored by the contract) and `attendance.ts::deriveAttendancePublicClaimWitness` recover secret/entry from the v1 credential signature; the recovery signature is never included in any payload.
+- `attendanceClaims.ts::preparePublicAttendanceClaim` checks the finalized root, consumption state, and locally rebuilt path before reporting `ready`, with distinct `not-finalized`, `not-a-member`, and `already-consumed` outcomes.
+- `application.ts::preparePublicClaim` requires explicit disclosure consent, shows the claiming account, signs only the frozen attendance message, and keeps secret/proof in memory only; submission re-checks account/chain and discards stale preparations (`stale-account`).
+- `/attendance` presents permanence, public secret/path disclosure, observer private proofs, and front-running as accepted risks before consent, and displays the target wallet/event.
+- Fixture limitation: published entries come from the organizer's local collection, not the unbuilt 07 IPFS publication pipeline, and the Merkle/credential format is a disclosed POC convention rather than the TODO-01-approved canonical format.

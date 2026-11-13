@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AttendanceRouteImport } from './routes/attendance'
 import { Route as TestusdRouteImport } from './routes/testusd'
 import { Route as ProposalsIndexRouteImport } from './routes/proposals/index'
 import { Route as ProposalsProposalIdRouteImport } from './routes/proposals/$proposalId'
@@ -20,6 +21,11 @@ import { Route as TreasuriesTreasuryAddressRouteImport } from './routes/treasuri
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AttendanceRoute = AttendanceRouteImport.update({
+  id: '/attendance',
+  path: '/attendance',
   getParentRoute: () => rootRouteImport,
 } as any)
 const TestusdRoute = TestusdRouteImport.update({
@@ -56,6 +62,7 @@ const TreasuriesTreasuryAddressRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/attendance': typeof AttendanceRoute
   '/testusd': typeof TestusdRoute
   '/proposals/$proposalId': typeof ProposalsProposalIdRoute
   '/proposals/new': typeof ProposalsNewRoute
@@ -65,6 +72,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/attendance': typeof AttendanceRoute
   '/testusd': typeof TestusdRoute
   '/proposals/$proposalId': typeof ProposalsProposalIdRoute
   '/proposals/new': typeof ProposalsNewRoute
@@ -75,6 +83,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/attendance': typeof AttendanceRoute
   '/testusd': typeof TestusdRoute
   '/proposals/$proposalId': typeof ProposalsProposalIdRoute
   '/proposals/new': typeof ProposalsNewRoute
@@ -86,6 +95,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/attendance'
     | '/testusd'
     | '/proposals/$proposalId'
     | '/proposals/new'
@@ -95,6 +105,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/attendance'
     | '/testusd'
     | '/proposals/$proposalId'
     | '/proposals/new'
@@ -104,6 +115,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/attendance'
     | '/testusd'
     | '/proposals/$proposalId'
     | '/proposals/new'
@@ -114,6 +126,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AttendanceRoute: typeof AttendanceRoute
   TestusdRoute: typeof TestusdRoute
   ProposalsProposalIdRoute: typeof ProposalsProposalIdRoute
   ProposalsNewRoute: typeof ProposalsNewRoute
@@ -129,6 +142,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/attendance': {
+      id: '/attendance'
+      path: '/attendance'
+      fullPath: '/attendance'
+      preLoaderRoute: typeof AttendanceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/testusd': {
@@ -178,6 +198,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AttendanceRoute: AttendanceRoute,
   TestusdRoute: TestusdRoute,
   ProposalsProposalIdRoute: ProposalsProposalIdRoute,
   ProposalsNewRoute: ProposalsNewRoute,

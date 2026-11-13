@@ -6,6 +6,7 @@ type PublicManifest = {
   chainId: number
   daoAddress: string | null
   testUsdAddress: string | null
+  attendanceClaimsAddress?: string | null
   artifacts: Record<string, string>
 }
 
@@ -18,7 +19,7 @@ function validateManifest(manifest: PublicManifest): void {
   if (!Number.isSafeInteger(manifest.chainId) || manifest.chainId <= 0) {
     throw new Error('Public chainId must be a positive safe integer')
   }
-  for (const address of [manifest.daoAddress, manifest.testUsdAddress]) {
+  for (const address of [manifest.daoAddress, manifest.testUsdAddress, manifest.attendanceClaimsAddress ?? null]) {
     if (address !== null && !/^0x[0-9a-fA-F]{40}$/.test(address ?? '')) {
       throw new Error('Public addresses must be EVM addresses or null')
     }
@@ -46,8 +47,8 @@ async function writePublicArtifacts(
   destination: string,
 ): Promise<void> {
   // Only these public fields cross into the frontend, never full deployment config.
-  const { chainId, daoAddress, testUsdAddress } = manifest
-  const output = { chainId, daoAddress, testUsdAddress, abis }
+  const { chainId, daoAddress, testUsdAddress, attendanceClaimsAddress } = manifest
+  const output = { chainId, daoAddress, testUsdAddress, attendanceClaimsAddress: attendanceClaimsAddress ?? null, abis }
   await mkdir(dirname(destination), { recursive: true })
   await writeFile(destination, JSON.stringify(output, null, 2) + '\n')
 }

@@ -35,18 +35,21 @@ export async function loadArtifact(contractName: string, solFile: string): Promi
 export interface DeploymentFixture {
   testUsdAddress: Address
   daoAddress: Address
+  attendanceClaimsAddress: Address
   publicClient: PublicClient
   walletClients: WalletClient[]
   accounts: Address[]
   daoArtifact: ContractArtifact
   testUsdArtifact: ContractArtifact
   treasuryArtifact: ContractArtifact
+  attendanceClaimsArtifact: ContractArtifact
 }
 
 export async function deployTestFixture(provider: EIP1193Provider): Promise<DeploymentFixture> {
   const daoArtifact = await loadArtifact('DAO', 'DAO.sol')
   const testUsdArtifact = await loadArtifact('TestUSD', 'TestUSD.sol')
   const treasuryArtifact = await loadArtifact('Treasury', 'Treasury.sol')
+  const attendanceClaimsArtifact = await loadArtifact('AttendanceClaims', 'AttendanceClaims.sol')
 
   const publicClient = createPublicClient({
     chain: hardhat,
@@ -101,14 +104,32 @@ export async function deployTestFixture(provider: EIP1193Provider): Promise<Depl
   }
   const daoAddress = daoReceipt.contractAddress
 
+  // Deploy AttendanceClaims
+  const attendanceClaimsDeployHash = await deployer.deployContract({
+    abi: attendanceClaimsArtifact.abi,
+    bytecode: attendanceClaimsArtifact.bytecode,
+    args: [daoAddress],
+  })
+
+  const attendanceClaimsReceipt = await publicClient.waitForTransactionReceipt({
+    hash: attendanceClaimsDeployHash,
+  })
+
+  if (!attendanceClaimsReceipt.contractAddress) {
+    throw new Error('AttendanceClaims deployment failed - no contract address')
+  }
+  const attendanceClaimsAddress = attendanceClaimsReceipt.contractAddress
+
   return {
     testUsdAddress,
     daoAddress,
+    attendanceClaimsAddress,
     publicClient,
     walletClients,
     accounts: rawAccounts,
     daoArtifact,
     testUsdArtifact,
     treasuryArtifact,
+    attendanceClaimsArtifact,
   }
 }
