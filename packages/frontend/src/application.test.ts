@@ -93,8 +93,8 @@ function makeAdapter(overrides?: Partial<WalletAdapter>): ControlledAdapter {
   })
 }
 
-const ACCOUNT_A = '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA01' as const
-const ACCOUNT_B = '0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB02' as const
+const ACCOUNT_A = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa01' as const
+const ACCOUNT_B = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02' as const
 
 test('treasury creation waits for a DAO creation event and exposes the confirmed treasury', async () => {
   const hash = `0x${'12'.repeat(32)}` as Hex

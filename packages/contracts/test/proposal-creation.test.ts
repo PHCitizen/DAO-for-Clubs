@@ -179,6 +179,7 @@ test('proposal creation on a real local chain', async (t) => {
         'checkPassing',
         'createProposal',
         'createTreasury',
+        'releaseFunds',
         'voteNo',
         'voteYes',
       ])
