@@ -17,22 +17,42 @@ or Yarn lockfiles.
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm dev
+pnpm dev:chain
 ```
 
-Open <http://localhost:3000>. The welcome page works without a wallet, running
-chain, credentials, or environment file.
-
-In another terminal, optionally start the real local EVM:
+Keep the local EVM running. In another terminal, generate the deployment
+configuration before starting the app:
 
 ```sh
-pnpm dev:chain
+pnpm deploy:local
+pnpm dev
 ```
 
 RPC: `http://127.0.0.1:8545`, chain ID: **31337**. The node is loopback-only and
 state resets when restarted. Hardhat prints development accounts; these accounts
 are public test fixtures, not secrets to reuse or fund on a public network.
-No private keys are committed. The scaffold deploys nothing.
+No private keys are required by the deployment script. Open
+<http://localhost:3000>. Deployment addresses and the frontend's generated
+addresses/ABIs are local, gitignored files; every developer must generate them.
+
+### Deploy locally and configure the UI
+
+With `pnpm dev:chain` running in another terminal:
+
+```sh
+pnpm deploy:local
+pnpm dev
+```
+
+This builds and deploys TestUSD and the DAO, then updates the public manifest
+and the frontend's generated addresses/ABIs. Open <http://localhost:3000/testusd>
+and connect the node's first development account on chain 31337 to mint TestUSD.
+That account is the currency administrator; treasury administration alone cannot
+mint currency. No private key is stored in the frontend.
+
+Rerun deployment after restarting the local chain, which clears its state.
+Each deployment creates fresh contracts and replaces the UI's configured
+addresses. Reload a running dev UI, or rebuild a production preview afterward.
 
 ## Verify
 
@@ -45,6 +65,9 @@ pnpm --filter @dao/contracts test    # real EVM transfer test
 pnpm --filter @dao/contracts build
 pnpm --filter @dao/contracts typecheck
 ```
+
+Run `pnpm deploy:local` before these checks on a fresh checkout, since frontend
+tests, builds, and TypeScript checks consume the generated public artifact file.
 
 The first Hardhat build/test downloads the pinned Solidity compiler and therefore
 needs internet access. Tests create isolated in-process EVMs and do not require
@@ -112,8 +135,8 @@ installation, builds, or behavioral tests.
 - [Public artifact handoff](docs/public-artifacts.md): generated ABI/deployment
   JSON is the only cross-package browser input.
 
-No environment configuration is needed for this ticket. The checked-in public
-manifest explicitly has null DAO/TestUSD addresses. Network/RPC selection and
-wallet connection belong to subsequent tickets. Never put private credentials
-in `VITE_*` variables: they are public browser build inputs. Keep future
+No environment configuration is needed for local deployment. The public manifest
+and generated frontend artifact are gitignored and created by `pnpm deploy:local`.
+Never put private
+credentials in `VITE_*` variables: they are public browser build inputs. Keep
 deployment credentials in ignored local configuration owned by contracts/tooling.
