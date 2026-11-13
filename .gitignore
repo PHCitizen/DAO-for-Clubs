@@ -5,6 +5,8 @@ dist/
 coverage/
 packages/contracts/artifacts/
 packages/contracts/cache/
+packages/contracts/deployments/public.json
+packages/frontend/src/generated/public-artifacts.json
 .env
 .env.*
 !.env.example

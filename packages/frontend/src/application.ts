@@ -60,6 +60,12 @@ import {
   TestUsdMintRevertedError,
   TestUsdSubmissionError,
 } from './testusd.js'
+import {
+  type ProposalDocument,
+  PROPOSAL_DOCUMENT_VERSION,
+  encodeProposalDocument,
+  renderProposalMarkdown,
+} from './proposal.js'
 
 // ---------------------------------------------------------------------------
 // Wallet connection and network state
@@ -552,6 +558,36 @@ export type FundingState =
   | (FundingRequest & { status: 'confirmed'; hash: Hash; balances?: FundingBalances; refreshError?: string })
   | { status: 'rejected' | 'failed'; message: string }
 
+// ---------------------------------------------------------------------------
+// Proposal draft authoring
+// ---------------------------------------------------------------------------
+//
+// Drafting is wallet-free and chain-free. The draft lives only in memory for
+// the current page load; persistent backup is intentionally out of scope.
+
+export interface ProposalDraft {
+  title: string
+  markdown: string
+}
+
+export interface ProposalDraftPreview {
+  /** Snapshot of the reviewed draft. */
+  draft: ProposalDraft
+  /** Versioned document representation consumed by publication. */
+  document: ProposalDocument
+  /** Sanitized HTML produced by the shared safe-rendering policy. */
+  html: string
+  /** Size of the exact UTF-8 document bytes that would be published. */
+  encodedBytes: number
+}
+
+export interface EncodedProposalDraft {
+  document: ProposalDocument
+  bytes: Uint8Array
+}
+
+export type ProposalDraftListener = (draft: ProposalDraft) => void
+
 export function createApplication(
   adapter?: WalletAdapter,
   injectedRpcAdapter?: RpcAdapter,
@@ -700,6 +736,18 @@ export function createApplication(
     for (const listener of fundingListeners) listener(state)
   }
 
+  // In-memory proposal draft; never requires a wallet or a chain read.
+  let proposalDraft: ProposalDraft = { title: '', markdown: '' }
+  const proposalDraftListeners = new Set<ProposalDraftListener>()
+
+  function currentProposalDocument(): ProposalDocument {
+    return {
+      version: PROPOSAL_DOCUMENT_VERSION,
+      title: proposalDraft.title,
+      markdown: proposalDraft.markdown,
+    }
+  }
+
   async function fundingBalances(treasury: Address, sender: Address): Promise<FundingBalances> {
     const contracts = rpc?.contracts
     const dao = deploymentContext.daoAddress
@@ -763,6 +811,52 @@ export function createApplication(
   }
 
   return {
+    // -----------------------------------------------------------------------
+    // Proposal draft authoring and safe preview
+    // -----------------------------------------------------------------------
+
+    readProposalDraft(): ProposalDraft {
+      return { ...proposalDraft }
+    },
+
+    onProposalDraftChanged(listener: ProposalDraftListener) {
+      proposalDraftListeners.add(listener)
+      return () => {
+        proposalDraftListeners.delete(listener)
+      }
+    },
+
+    /** Replaces the given draft fields and notifies subscribers. */
+    updateProposalDraft(change: Partial<ProposalDraft>): ProposalDraft {
+      proposalDraft = {
+        title: change.title ?? proposalDraft.title,
+        markdown: change.markdown ?? proposalDraft.markdown,
+      }
+      const snapshot = { ...proposalDraft }
+      for (const listener of proposalDraftListeners) listener(snapshot)
+      return snapshot
+    },
+
+    /** Renders the current draft with the shared safe-Markdown policy. */
+    previewProposalDraft(): ProposalDraftPreview {
+      const document = currentProposalDocument()
+      return {
+        draft: { ...proposalDraft },
+        document,
+        html: renderProposalMarkdown(document.markdown),
+        encodedBytes: encodeProposalDocument(document).byteLength,
+      }
+    },
+
+    /**
+     * Exact versioned document bytes for the current draft. The publication
+     * ticket pins these bytes; changing the draft changes the bytes.
+     */
+    encodeProposalDraft(): EncodedProposalDraft {
+      const document = currentProposalDocument()
+      return { document, bytes: encodeProposalDocument(document) }
+    },
+
     readFundingState: () => fundingState,
     onFundingStateChanged(listener: (state: FundingState) => void) {
       fundingListeners.add(listener)
