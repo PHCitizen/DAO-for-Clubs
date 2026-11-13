@@ -26,3 +26,70 @@
     color: var(--color-text-primary);
   }
 }
+
+/* Shared by the draft preview and, later, published proposal documents. */
+@layer components {
+  .proposal-document-title {
+    @apply break-words text-2xl font-bold tracking-tight text-text-primary;
+  }
+  .proposal-document-body {
+    @apply mt-4 break-words text-sm leading-6 text-text-primary;
+  }
+  .proposal-document-body > :first-child {
+    @apply mt-0;
+  }
+  .proposal-document-body h1 {
+    @apply mt-6 text-xl font-bold;
+  }
+  .proposal-document-body h2 {
+    @apply mt-6 text-lg font-semibold;
+  }
+  .proposal-document-body h3 {
+    @apply mt-5 text-base font-semibold;
+  }
+  .proposal-document-body h4,
+  .proposal-document-body h5,
+  .proposal-document-body h6 {
+    @apply mt-4 text-sm font-semibold;
+  }
+  .proposal-document-body p {
+    @apply mt-3;
+  }
+  .proposal-document-body ul {
+    @apply mt-3 list-disc pl-5;
+  }
+  .proposal-document-body ol {
+    @apply mt-3 list-decimal pl-5;
+  }
+  .proposal-document-body li {
+    @apply mt-1;
+  }
+  .proposal-document-body blockquote {
+    @apply mt-3 border-l-2 border-binance-yellow/60 pl-4 text-text-secondary;
+  }
+  .proposal-document-body code {
+    @apply rounded bg-card px-1 py-0.5 font-mono text-xs text-binance-yellow;
+  }
+  .proposal-document-body pre {
+    @apply mt-3 overflow-x-auto rounded-lg border border-card-border bg-card p-3;
+  }
+  .proposal-document-body pre code {
+    @apply bg-transparent p-0 text-text-primary;
+  }
+  .proposal-document-body a {
+    @apply text-binance-yellow underline underline-offset-2 hover:text-binance-yellow-hover;
+  }
+  .proposal-document-body img {
+    @apply mt-3 max-w-full rounded-lg border border-card-border;
+  }
+  .proposal-document-body hr {
+    @apply mt-5 border-card-border;
+  }
+  .proposal-document-body table {
+    @apply mt-3 w-full border-collapse text-left;
+  }
+  .proposal-document-body th,
+  .proposal-document-body td {
+    @apply border border-card-border px-2 py-1;
+  }
+}
