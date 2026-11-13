@@ -1,4 +1,5 @@
 import publicArtifacts from './generated/public-artifacts.json' with { type: 'json' }
+import { castYesVote, readVotingProgress, VoteSubmissionError, VoteRevertedError, VoteConfirmationError, type VotingProgress } from './voting.js'
 import { decodeEventLog, erc20Abi, formatUnits, isAddress, parseUnits, type Hash, type Hex } from 'viem'
 import {
   type WalletAdapter,
@@ -735,6 +736,17 @@ export type ProposalCountResult =
   | { status: 'success'; chainId: number; count: bigint }
   | TreasuryReadFailure
 
+export type VotingReadResult =
+  | { status: 'success'; progress: VotingProgress }
+  | { status: 'not-found'; id: bigint }
+  | TreasuryReadFailure
+
+export type YesVoteResult =
+  | { status: 'confirmed'; hash: Hex; progress: VotingProgress | null }
+  | { status: 'invalid-input'; message: string }
+  | TransactionActionFailure
+  | TreasuryReadFailure
+
 export function createApplication(
   adapter?: WalletAdapter,
   injectedRpcAdapter?: RpcAdapter,
@@ -1042,6 +1054,43 @@ export function createApplication(
   }
 
   return {
+    async readVoting(proposalId: bigint): Promise<VotingReadResult> {
+      if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'Voting requires a configured DAO and RPC endpoint.' }
+      try {
+        const progress = await readVotingProgress(proposalChain, proposalConfig, proposalId)
+        return progress ? { status: 'success', progress } : { status: 'not-found', id: proposalId }
+      } catch (error) { return toProposalReadFailure(error) }
+    },
+
+    async voteYes(proposalId: bigint, tokenId: bigint): Promise<YesVoteResult> {
+      if (proposalId <= 0n || tokenId <= 0n || proposalId >= 2n ** 256n || tokenId >= 2n ** 256n) return { status: 'invalid-input', message: 'Enter valid positive proposal and token IDs.' }
+      if (!proposalChain || !proposalConfig) return { status: 'unconfigured', message: 'Voting requires a configured DAO and RPC endpoint.' }
+      if (!adapter) return { status: 'wallet-unavailable', message: 'No wallet extension is available.' }
+      if (walletState.status !== 'connected') return { status: 'wallet-not-connected', message: 'Connect the voting NFT holder wallet.' }
+      try {
+        const prepared = await this.prepareDeploymentAction({ target: 'dao' })
+        return await castYesVote(proposalChain, proposalConfig, { from: prepared.context.account, proposalId, tokenId }, async () => {
+          const [account, chainId] = await Promise.all([adapter.getAccount(), adapter.getChainId()])
+          if (chainId !== deploymentContext.chainId) throw new ChainMismatchError(deploymentContext.chainId, chainId ?? 0)
+          if (account?.toLowerCase() !== prepared.context.account.toLowerCase()) throw new StaleActionConfigurationError()
+          prepared.assertValid()
+        })
+      } catch (error) {
+        if (error instanceof ChainMismatchError) return { status: 'chain-mismatch', expectedChainId: error.expectedChainId, actualChainId: error.actualChainId }
+        if (error instanceof WalletNotConnectedError) return { status: 'wallet-not-connected', message: 'Connect the voting NFT holder wallet.' }
+        if (error instanceof DeploymentNotDeployedError || error instanceof DeploymentNotConfiguredError) return { status: 'unconfigured', message: error.message }
+        return toTransactionFailure(error, {
+          ChainMismatchError: ProposalChainMismatchError,
+          RevertedError: VoteRevertedError, ConfirmationError: VoteConfirmationError, SubmissionError: VoteSubmissionError,
+        }, {
+          revertedMessage: 'The vote reverted. No ballot was recorded.',
+          rpcUnavailableMessage: 'Voting could not reach the configured RPC endpoint.',
+          rejectedMessage: 'The vote was rejected in your wallet. Nothing was submitted.',
+          submissionMessage: 'The yes vote was not submitted. Check ownership, token consumption, and whether voting is still open.',
+        })
+      }
+    },
+
     // -----------------------------------------------------------------------
     // Proposal draft authoring and safe preview
     // -----------------------------------------------------------------------
