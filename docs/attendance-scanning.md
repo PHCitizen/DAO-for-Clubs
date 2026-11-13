@@ -4,7 +4,7 @@ Implementation: `packages/frontend/src/attendanceScan.ts` (validation, dedupe,
 collection), `application.ts` (`startAttendanceScan`), `browserCamera.ts` (real
 camera transport), UI in `routes/proposals/-attendance.tsx`.
 
-Scope: in-session collection only. Persistence across reload is the next ticket.
+Persistence (spec 06.03): accepted entries are saved to localStorage under a versioned key per chain ID, DAO address, and proposal ID (`attendanceStorage.ts`). Unreadable saved data is reported and not restored.
 The collection retains hashed entries and event context (chain ID, DAO address,
 proposal ID) only. Payloads with any field beyond `v, chainId, dao, proposalId,
 entry` are rejected whole (a secret or signature must never be silently trimmed).
